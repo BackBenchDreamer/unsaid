@@ -24,10 +24,15 @@
 //       _meta includes provider: "huggingface" for future backend portability.
 //  12.  Return { result, meta: { cached, generationMs } }
 //
+// HuggingFace endpoint:
+//   router.huggingface.co/hf-inference/models/<model>  (current, as of 2026)
+//   api-inference.huggingface.co/models/<model>        (retired — DNS NXDOMAIN)
+//
 // Response shape normalisation (generateSentiment):
-//   HF Inference API returns HFEmotionScore[] for a single input string
-//   and HFEmotionScore[][] for a batch array.  We always send a single string,
-//   so we handle both but prefer the flat form.  Anything else is logged and thrown.
+//   The router endpoint returns HFEmotionScore[][] (nested, first element is scores
+//   for the first input).  The old api-inference endpoint returned HFEmotionScore[]
+//   (flat) for a single string.  We handle both shapes for forward-compatibility.
+//   Anything else is logged and thrown as HFShapeError.
 //
 // Error codes returned to the client:
 //   MODEL_LOADING  — HF returned 503; user should retry in ~20s
@@ -59,7 +64,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // and redeploying the function.
 //
 const AI_CONFIG = {
-  promptVersion: '1.0.0',
+  promptVersion: '2.0.0',  // bumped from 1.0.0 — must match src/entities/insight.ts
   defaultModel: 'j-hartmann/emotion-english-distilroberta-base',
 } as const;
 
@@ -259,8 +264,11 @@ async function generateSentiment(
 ): Promise<{ result: SentimentResult; generationMs: number }> {
   const startMs = Date.now();
 
+  // The HF Inference API migrated from api-inference.huggingface.co (retired,
+  // no longer resolves in DNS) to router.huggingface.co/hf-inference/models.
+  // The router returns HFEmotionScore[][] (nested) for single-string inputs.
   const hfRes = await fetch(
-    `https://api-inference.huggingface.co/models/${model}`,
+    `https://router.huggingface.co/hf-inference/models/${model}`,
     {
       method: 'POST',
       headers: {

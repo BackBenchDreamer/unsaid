@@ -74,12 +74,18 @@ export function useInsights() {
 }
 
 /**
- * Derive a single entry's insight from the useInsights cache.
- * No extra network call — just a lookup on the already-fetched array.
+ * Derive a single entry's insights from the useInsights cache.
+ * No extra network call — just lookups on the already-fetched array.
  *
- * Also computes isStale: true when the saved content has changed since the
- * insight was generated. Staleness is tied to last *saved* content, not live
- * keystrokes, so the notice only appears after the next successful autosave.
+ * Returns both reflectionInsight and sentimentInsight separately so the
+ * AI panel can apply the priority rule: reflection takes precedence over sentiment.
+ *
+ * Also computes isStale using the correct model for the active insight type:
+ *   - reflectionInsight present → hash against settings.reflectionModel (groq_model)
+ *   - only sentimentInsight    → hash against settings.aiModel (hf_model)
+ *
+ * Staleness is tied to last *saved* content, not live keystrokes,
+ * so the notice only appears after the next successful autosave.
  *
  * @param entryId  The entry's DB id, or undefined if the entry hasn't been saved yet.
  * @param savedContent  The last successfully saved content string (from JournalEditor's
@@ -88,7 +94,12 @@ export function useInsights() {
 export function useEntryInsight(
   entryId: string | undefined,
   savedContent: string,
-): { insight: EntryInsight | undefined; isStale: boolean } {
+): {
+  insight: EntryInsight | undefined;
+  reflectionInsight: EntryInsight | undefined;
+  sentimentInsight: EntryInsight | undefined;
+  isStale: boolean;
+} {
   const { data: insights } = useInsights();
   const { data: settings } = useSettings();
 
@@ -96,42 +107,92 @@ export function useEntryInsight(
   // Stored in state so the component re-renders once the hash resolves.
   const [savedHash, setSavedHash] = useState('');
 
+  // Derive the individual insight rows from the full cache.
+  const reflectionInsight = entryId
+    ? (insights ?? []).find((i) => i.entryId === entryId && i.type === 'reflection')
+    : undefined;
+
+  const sentimentInsight = entryId
+    ? (insights ?? []).find((i) => i.entryId === entryId && i.type === 'sentiment')
+    : undefined;
+
+  // Priority: reflection > sentiment
+  const activeInsight = reflectionInsight ?? sentimentInsight;
+
   useEffect(() => {
-    if (!savedContent || !settings) {
-      // Reset asynchronously to avoid synchronous setState-in-effect warning
+    if (!savedContent || !settings || !activeInsight) {
       const t = setTimeout(() => setSavedHash(''), 0);
       return () => clearTimeout(t);
     }
+    // Use reflectionModel for 'reflection' insights, aiModel for 'sentiment' insights.
+    // This ensures the stale-detection hash matches what the Edge Function computes.
+    const model =
+      activeInsight.type === 'reflection'
+        ? settings.reflectionModel
+        : settings.aiModel;
+
     let cancelled = false;
-    sha256Hex(
-      sourceEnvelope(savedContent, AI_CONFIG.promptVersion, settings.aiModel),
-    ).then((h) => {
+    sha256Hex(sourceEnvelope(savedContent, AI_CONFIG.promptVersion, model)).then((h) => {
       if (!cancelled) setSavedHash(h);
     });
     return () => {
       cancelled = true;
     };
-  }, [savedContent, settings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedContent, settings, activeInsight?.type, activeInsight?.sourceHash]);
 
-  const insight = entryId
-    ? (insights ?? []).find((i) => i.entryId === entryId)
-    : undefined;
-
-  // Stale when: insight exists, has a stored hash, and the saved hash differs.
+  // Stale when: activeInsight exists, savedHash computed, and they differ.
   // Null source_hash (legacy row) is treated as always-stale.
   const isStale =
-    !!insight &&
+    !!activeInsight &&
     savedHash !== '' &&
-    (insight.sourceHash === null || savedHash !== insight.sourceHash);
+    (activeInsight.sourceHash === null || savedHash !== activeInsight.sourceHash);
 
-  return { insight, isStale };
+  return { insight: activeInsight, reflectionInsight, sentimentInsight, isStale };
 }
 
 // ─── Mutations ─────────────────────────────────────────────
 
 /**
- * Trigger AI reflection for a journal entry.
- * On success, invalidates the user's insights query so all panels refresh.
+ * Trigger full reflection generation for a journal entry.
+ *
+ * Primary path: calls generate-reflection Edge Function (HF + Groq).
+ * Fallback path: if Groq is not configured (REFLECTION_NOT_CONFIGURED),
+ *   silently falls back to the legacy analyze-sentiment Edge Function (HF only).
+ *
+ * The fallback is transparent to the user — no error is shown.
+ * On error (other than REFLECTION_NOT_CONFIGURED), the error is surfaced
+ * via mutation.isError / mutation.error in the same way as useGenerateInsight.
+ */
+export function useGenerateReflection() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  return useMutation({
+    mutationFn: async (entryId: string) => {
+      const result = await insightsService.generateReflection(entryId);
+      if (!result.ok) {
+        // REFLECTION_NOT_CONFIGURED — Groq not set up yet.
+        // Silently fall back to legacy HF sentiment path.
+        await insightsService.generateInsight(entryId);
+      }
+      // result.ok === true: reflection generated successfully.
+    },
+    onSuccess: () => {
+      if (user) {
+        queryClient.invalidateQueries({ queryKey: insightKeys.user(user.id) });
+      }
+    },
+    // onError fires if generateInsight() (fallback) throws, or if
+    // generateReflection() throws on a non-REFLECTION_NOT_CONFIGURED error.
+    // Error is surfaced to the component via mutation.isError / mutation.error.
+  });
+}
+
+/**
+ * Trigger AI sentiment for a journal entry (legacy HF-only path).
+ * Kept unchanged — called as fallback inside useGenerateReflection.
+ * Also used directly in tests and any component that only needs sentiment.
  */
 export function useGenerateInsight() {
   const queryClient = useQueryClient();

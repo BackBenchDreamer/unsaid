@@ -1,11 +1,15 @@
 // ============================================================
 // encrypt-token — Supabase Edge Function (Deno)
 //
-// POST { token: string }
+// POST { token: string, provider?: 'hf' | 'groq' }
 // Authorization: Bearer <access_token>
 //
 // Encrypts the plaintext AI provider token using AES-GCM and stores
-// the ciphertext in user_settings.hf_token_encrypted.
+// the ciphertext in the appropriate user_settings column.
+//
+// provider field (optional, defaults to 'hf' for backward compatibility):
+//   'hf'   → writes to user_settings.hf_token_encrypted
+//   'groq' → writes to user_settings.groq_token_encrypted
 //
 // The raw token is NEVER returned to the client and is NOT logged.
 //
@@ -117,15 +121,22 @@ Deno.serve(async (req: Request) => {
 
   // ── 2. Parse body ────────────────────────────────────────
   let plainToken: string;
+  let provider: string;
   try {
     const body = await req.json();
     plainToken = body.token;
+    // provider defaults to 'hf' so all existing callers remain backward-compatible.
+    provider = typeof body.provider === 'string' ? body.provider : 'hf';
   } catch {
     return json({ error: 'Invalid JSON body' }, 400);
   }
 
   if (!plainToken || typeof plainToken !== 'string' || plainToken.trim().length === 0) {
     return json({ error: 'token must be a non-empty string' }, 400);
+  }
+
+  if (provider !== 'hf' && provider !== 'groq') {
+    return json({ error: "provider must be 'hf' or 'groq'" }, 400);
   }
 
   // ── 3. Encrypt ───────────────────────────────────────────
@@ -145,12 +156,17 @@ Deno.serve(async (req: Request) => {
 
   const { error: updateError } = await svc
     .from('user_settings')
-    .update({ hf_token_encrypted: ciphertext })
+    .update(
+      provider === 'groq'
+        ? { groq_token_encrypted: ciphertext }
+        : { hf_token_encrypted: ciphertext },
+    )
     .eq('user_id', user.id);
 
   if (updateError) {
-    console.error('Failed to update user_settings:', updateError);
-    return json({ error: 'Failed to save token', detail: updateError.message }, 500);
+    // Log detail server-side only — never return schema info to the client.
+    console.error('Failed to update user_settings:', updateError.message);
+    return json({ error: 'Failed to save token' }, 500);
   }
 
   // ── 5. Return success (never echo the token) ─────────────

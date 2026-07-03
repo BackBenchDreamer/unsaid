@@ -1138,6 +1138,98 @@ a:hover { color: var(--accent-hover); }
   font-style: italic;
 }
 
+/* ─── Reflection Card ────────────────────────────────────────── */
+.reflection-card {
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.reflection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.reflection-header-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.reflection-header-time {
+  font-size: 0.73rem;
+  color: var(--text-muted);
+}
+
+.reflection-summary {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.reflection-emotions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs, 0.25rem);
+}
+
+.reflection-emotion-pill {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 9999px);
+  font-weight: 500;
+}
+.reflection-emotion-pill.positive {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--success);
+}
+.reflection-emotion-pill.negative {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--danger);
+}
+.reflection-emotion-pill.neutral {
+  background: rgba(86, 83, 79, 0.25);
+  color: var(--text-muted);
+}
+
+.reflection-themes {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.reflection-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-xs, 0.25rem) 0;
+}
+
+.reflection-question {
+  font-size: 0.88rem;
+  font-style: italic;
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin: 0;
+  line-height: 1.5;
+}
+.reflection-question:hover {
+  color: var(--accent);
+}
+
+.reflection-richer-notice {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: var(--space-xs, 0.25rem);
+}
+
 /* AI Menu popover */
 .ai-menu-wrapper {
   position: relative;
@@ -1419,6 +1511,16 @@ a:hover { color: var(--accent-hover); }
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 0.78rem;
   color: var(--text-secondary);
+}
+
+.settings-subsection-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: var(--space-lg);
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ─── Empty States ─────────────────────────────────────────── */

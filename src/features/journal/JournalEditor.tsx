@@ -19,13 +19,13 @@ import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin';
 import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
-import { $getRoot, $createParagraphNode, $createTextNode, type EditorState } from 'lexical';
+import { $getRoot, $createParagraphNode, $createTextNode, type EditorState, type LexicalEditor } from 'lexical';
 import { useEntryByDate, useUpsertEntry } from './hooks';
 import { useSettings } from '../settings/hooks';
-import { useEntryInsight, useGenerateInsight, formatReflectedAt } from '../insights/hooks';
+import { useEntryInsight, useGenerateReflection, formatReflectedAt } from '../insights/hooks';
 import type { EntryUpsertPayload, Mood } from '../../entities/entry';
 import { MOODS } from '../../entities/entry';
-import { isSentimentPayload } from '../../entities/insight';
+import { isSentimentPayload, isReflectionPayload } from '../../entities/insight';
 import type { AiAction } from '../../entities/insight';
 import { ServiceError } from '../../services/errors';
 import { AUTOSAVE_DEBOUNCE_MS, MOOD_EMOJIS } from '../../shared/constants';
@@ -38,6 +38,18 @@ const SENTIMENT_EMOJI: Record<string, string> = {
   neutral: '😐',
   negative: '😔',
 };
+
+// ─── Emotion valence helper ────────────────────────────────
+
+const POSITIVE_EMOTIONS = new Set(['joy', 'surprise']);
+const NEGATIVE_EMOTIONS = new Set(['anger', 'disgust', 'fear', 'sadness']);
+
+function getEmotionValence(label: string): 'positive' | 'negative' | 'neutral' {
+  const l = label.toLowerCase();
+  if (POSITIVE_EMOTIONS.has(l)) return 'positive';
+  if (NEGATIVE_EMOTIONS.has(l)) return 'negative';
+  return 'neutral';
+}
 
 // ─── AiMenu — extensible AI action popover ─────────────────
 
@@ -100,15 +112,26 @@ function AiMenu({ actions, isOpen, onClose, triggerRef }: AiMenuProps) {
 }
 
 // ─── InitPlugin — loads existing content into the editor ──────
+//
+// Also captures the LexicalEditor instance into editorRef so the AI panel
+// (which renders outside LexicalComposer) can call editor.update() for the
+// "append question" feature. useLexicalComposerContext() can only be called
+// from inside LexicalComposer, so the ref pattern is required.
 
 interface InitPluginProps {
   initialContent: string;
   onReady: () => void;
+  editorRef: React.MutableRefObject<LexicalEditor | null>;
 }
 
-function InitPlugin({ initialContent, onReady }: InitPluginProps) {
+function InitPlugin({ initialContent, onReady, editorRef }: InitPluginProps) {
   const [editor] = useLexicalComposerContext();
   const initialized = useRef(false);
+
+  // Capture editor instance for external use (AI panel question append).
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor, editorRef]);
 
   useEffect(() => {
     if (initialized.current) return;
@@ -120,14 +143,10 @@ function InitPlugin({ initialContent, onReady }: InitPluginProps) {
       if (initialContent) {
         // Split by newlines to preserve paragraph breaks
         const lines = initialContent.split('\n');
-        lines.forEach((line, i) => {
+        lines.forEach((line) => {
           const para = $createParagraphNode();
           para.append($createTextNode(line));
-          if (i === 0) {
-            root.append(para);
-          } else {
-            root.append(para);
-          }
+          root.append(para);
         });
       } else {
         const para = $createParagraphNode();
@@ -167,30 +186,20 @@ export function JournalEditor({ date }: JournalEditorProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const reflectBtnRef = useRef<HTMLButtonElement>(null);
 
+  // Editor ref — populated by InitPlugin so the AI panel can call editor.update()
+  // from outside LexicalComposer (useLexicalComposerContext cannot be called there).
+  const editorRef = useRef<LexicalEditor | null>(null);
+
   // ── Editor initialization ──────────────────────────────────
-  //
-  // The LexicalComposer must NOT mount until we know the initial content.
-  // If it mounts while existingEntry is still loading, InitPlugin runs with
-  // initialContent='' and marks the editor ready — then when the fetch resolves
-  // the seeding effect is skipped because isEditorReadyRef is already true,
-  // leaving the editor permanently blank.
-  //
-  // Fix: gate the LexicalComposer on `editorSeedReady` — a boolean that only
-  // becomes true after useEntryByDate resolves (either null or Entry).
-  // This guarantees InitPlugin always receives the correct content on first run.
   const isEditorReadyRef = useRef(false);
   const [editorSeedReady, setEditorSeedReady] = useState(false);
   const [initialContent, setInitialContent] = useState('');
 
   // lastSavedContent — last successfully saved content string.
   // Used by useEntryInsight for stale detection (not live keystrokes).
-  // Kept as state so the value can be read during render by the hook.
-  // A companion ref mirrors it for synchronous reads inside saveEntry().
   const [lastSavedContent, setLastSavedContent] = useState('');
   const lastSavedContentRef = useRef('');
 
-  // Latest mood/tags as refs — kept in sync via effect so the debounced
-  // save closure always reads the current value without stale captures.
   const moodRef = useRef<Mood | null>(mood);
   const tagsRef = useRef<string[]>(tags);
 
@@ -203,41 +212,22 @@ export function JournalEditor({ date }: JournalEditorProps) {
   }, [tags]);
 
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // NOTE: All state resets on date change are handled for free by `key={date}` on
-  // LexicalComposer below — React unmounts and remounts the entire subtree.
 
-  // Seed editor once the fetch resolves.
-  //
-  // We wait until isLoading=false to avoid the race where InitPlugin initialises
-  // with '' before the entry arrives.  The key invariant is:
-  //
-  //   editorSeedReady = true  ⟺  initialContent already reflects the DB value
-  //
-  // After seeding we never touch initialContent again — subsequent edits flow
-  // through the autosave path, not the seed path.
-  //
-  // All setState calls are deferred via setTimeout to satisfy the
-  // react-hooks/set-state-in-effect lint rule while keeping them batched.
   useEffect(() => {
-    if (isLoading) return;       // still fetching — wait
-    if (editorSeedReady) return; // already seeded — nothing to do
+    if (isLoading) return;
+    if (editorSeedReady) return;
 
-    // Snapshot the entry synchronously before the timeout closure captures it,
-    // so it is not affected by any future React Query re-fetches.
     const content = existingEntry?.content ?? '';
-    const mood = existingEntry?.mood ?? null;
-    const tags = existingEntry?.tags ?? [];
+    const entryMood = existingEntry?.mood ?? null;
+    const entryTags = existingEntry?.tags ?? [];
 
-    // Update the ref synchronously so autosave can read the right content
-    // even if a mood/tag change fires before the timeout.
     lastSavedContentRef.current = content;
 
     const t = setTimeout(() => {
-      setMood(mood);
-      setTags(tags);
+      setMood(entryMood);
+      setTags(entryTags);
       setInitialContent(content);
       setLastSavedContent(content);
-      // Signal the LexicalComposer to mount with the correct content.
       setEditorSeedReady(true);
     }, 0);
     return () => clearTimeout(t);
@@ -259,7 +249,6 @@ export function JournalEditor({ date }: JournalEditorProps) {
       try {
         await upsertMutation.mutateAsync(payload);
         setLastSaved(new Date());
-        // Update both ref (for sync reads) and state (for render/hooks) after save.
         lastSavedContentRef.current = content;
         setLastSavedContent(content);
       } catch {
@@ -287,9 +276,6 @@ export function JournalEditor({ date }: JournalEditorProps) {
     [saveEntry],
   );
 
-  // Re-trigger save when mood or tags change (without waiting for editor change).
-  // Use lastSavedContentRef so we always save the current editor content —
-  // not existingEntry.content, which could be stale after in-session edits.
   const moodTagsSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
     if (!isEditorReadyRef.current) return;
@@ -300,7 +286,6 @@ export function JournalEditor({ date }: JournalEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mood, tags]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
@@ -309,24 +294,32 @@ export function JournalEditor({ date }: JournalEditorProps) {
   }, []);
 
   // AI state — derived from saved entry + hooks.
-  // Pass lastSavedContent (state) — not lastSavedContentRef.current (ref) — so
-  // the hook sees the updated value after each successful save.
-  const { insight, isStale } = useEntryInsight(
+  const { insight, reflectionInsight, sentimentInsight, isStale } = useEntryInsight(
     existingEntry?.id,
     lastSavedContent,
   );
-  const generateMutation = useGenerateInsight();
+  const generateReflectionMutation = useGenerateReflection();
 
-  // Auto-clear generate error after 5s.
-  // MODEL_LOADING errors get a distinct, user-actionable message with a longer
-  // display time (10s) since the user needs time to read the retry suggestion.
-  // setState is called inside setTimeout to satisfy react-hooks/set-state-in-effect.
+  // Append question to editor on click — uses ref pattern since AI panel
+  // is outside LexicalComposer and cannot call useLexicalComposerContext().
+  const appendQuestionToEditor = useCallback((question: string) => {
+    editorRef.current?.update(() => {
+      const root = $getRoot();
+      const emptyPara = $createParagraphNode();
+      root.append(emptyPara);
+      const questionPara = $createParagraphNode();
+      questionPara.append($createTextNode(question));
+      root.append(questionPara);
+    });
+  }, []);
+
+  // Auto-clear generate error after 5s (10s for MODEL_LOADING).
   const [generateError, setGenerateError] = useState('');
   const [isModelLoading, setIsModelLoading] = useState(false);
   useEffect(() => {
-    if (!generateMutation.isError) return;
+    if (!generateReflectionMutation.isError) return;
 
-    const err = generateMutation.error;
+    const err = generateReflectionMutation.error;
     const isLoading =
       err instanceof ServiceError && err.code === 'MODEL_LOADING';
     const msg = isLoading
@@ -348,22 +341,32 @@ export function JournalEditor({ date }: JournalEditorProps) {
       clearTimeout(setT);
       clearTimeout(clearT);
     };
-  }, [generateMutation.isError, generateMutation.error]);
+  }, [generateReflectionMutation.isError, generateReflectionMutation.error]);
 
-  // v1 AI action menu — adding a capability: new Edge Function + flip enabled: true
+  // Derived rendering data
+  const reflectionData =
+    reflectionInsight && isReflectionPayload(reflectionInsight.payload)
+      ? reflectionInsight.payload
+      : null;
+  const sentimentData =
+    sentimentInsight && isSentimentPayload(sentimentInsight.payload)
+      ? sentimentInsight.payload
+      : null;
+
+  // v2 AI action menu
   const aiActions: AiAction[] = [
     {
       id: 'generate-insight',
-      label: 'Generate Insight',
-      description: 'Analyse the emotional tone of this entry',
-      insightType: 'sentiment',
+      label: 'Reflect',
+      description: 'Generate a reflection on this entry',
+      insightType: 'reflection',
       invoke: () => {
         if (existingEntry?.id) {
-          generateMutation.mutate(existingEntry.id);
+          generateReflectionMutation.mutate(existingEntry.id);
         }
         setMenuOpen(false);
       },
-      enabled: !generateMutation.isPending,
+      enabled: !generateReflectionMutation.isPending,
     },
     {
       id: 'summarize-entry',
@@ -411,11 +414,6 @@ export function JournalEditor({ date }: JournalEditorProps) {
     }
   };
 
-  // Show spinner while:
-  //   - data is still fetching (isLoading), OR
-  //   - seed effect hasn't fired yet (editorSeedReady=false, which happens for
-  //     one render cycle between isLoading→false and the seed effect running).
-  // This guarantees LexicalComposer never mounts with stale/empty initialContent.
   if (isLoading || !editorSeedReady) {
     return (
       <div className="journal-editor">
@@ -433,15 +431,15 @@ export function JournalEditor({ date }: JournalEditorProps) {
   }
 
   const isToday = date === getTodayLocal();
-  const sentimentData = insight && isSentimentPayload(insight.payload) ? insight.payload : null;
+  // insight used only for the Re-reflect button label check
+  const hasAnyInsight = !!insight;
 
   const initialConfig = {
     namespace: `journal-${date}`,
     theme: editorTheme,
-    // Swallow Lexical internal errors in production — they are not user-facing
     onError: (_err: Error) => {
       if (import.meta.env.DEV) {
-        console.error('Lexical editor error:', _err); // intentional dev-only log
+        console.error('Lexical editor error:', _err);
       }
     },
   };
@@ -489,16 +487,14 @@ export function JournalEditor({ date }: JournalEditorProps) {
           {settings?.aiConfigured && (
             <>
               {/* State 4: Reflecting in progress */}
-              {generateMutation.isPending && (
+              {generateReflectionMutation.isPending && (
                 <div className="ai-panel-result">
                   <div className="loading-spinner" style={{ width: 16, height: 16 }} />
                   <span className="ai-panel-meta">Reflecting…</span>
                 </div>
               )}
 
-              {/* State 7: Error — two variants:
-                  - MODEL_LOADING: amber notice with retry hint, Reflect button stays visible
-                  - other errors: red notice, standard 5s auto-clear */}
+              {/* State 7: Error */}
               {generateError && (
                 <p
                   className="ai-panel-notice"
@@ -509,38 +505,114 @@ export function JournalEditor({ date }: JournalEditorProps) {
               )}
 
               {/* State 5 & 6: Insight exists */}
-              {!generateMutation.isPending && sentimentData && (
-                <div className="ai-panel-result">
-                  <span
-                    className={`sentiment-pill sentiment-${sentimentData.label}${isStale ? ' opacity-50' : ''}`}
-                    style={isStale ? { opacity: 0.5 } : undefined}
-                  >
-                    {SENTIMENT_EMOJI[sentimentData.label]}{' '}
-                    {sentimentData.label.charAt(0).toUpperCase() + sentimentData.label.slice(1)}
-                  </span>
-                  <span className="ai-panel-meta">
-                    {Math.round(sentimentData.confidence * 100)}% ·{' '}
-                    {formatReflectedAt(insight!.createdAt)}
-                  </span>
-                  {!isStale && (
+              {!generateReflectionMutation.isPending && (reflectionData || sentimentData) && (
+                <>
+                  {reflectionData ? (
+                    /* ── State 5: Full reflection card ── */
+                    <div
+                      className="reflection-card"
+                      style={isStale ? { opacity: 0.5 } : undefined}
+                    >
+                      <div className="reflection-header">
+                        <span className="reflection-header-label">Reflection</span>
+                        <span className="reflection-header-time">
+                          {formatReflectedAt(reflectionInsight!.createdAt)}
+                        </span>
+                      </div>
+                      <p className="reflection-summary">{reflectionData.summary}</p>
+                      <div className="reflection-emotions">
+                        {reflectionData.emotions.map((e) => (
+                          <span
+                            key={e.label}
+                            className={`reflection-emotion-pill ${getEmotionValence(e.label)}`}
+                          >
+                            ● {e.label} {Math.round(e.score * 100)}%
+                          </span>
+                        ))}
+                      </div>
+                      {reflectionData.themes.length > 0 && (
+                        <p className="reflection-themes">
+                          {reflectionData.themes.join(' · ')}
+                        </p>
+                      )}
+                      <div className="reflection-divider" />
+                      <p
+                        className="reflection-question"
+                        onClick={() => appendQuestionToEditor(reflectionData.question)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            appendQuestionToEditor(reflectionData.question);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        {reflectionData.question}
+                      </p>
+                    </div>
+                  ) : sentimentData ? (
+                    /* ── State 5 fallback: legacy sentiment pill ── */
+                    <>
+                      <div className="ai-panel-result">
+                        <span
+                          className={`sentiment-pill sentiment-${sentimentData.label}`}
+                          style={isStale ? { opacity: 0.5 } : undefined}
+                        >
+                          {SENTIMENT_EMOJI[sentimentData.label]}{' '}
+                          {sentimentData.label.charAt(0).toUpperCase() + sentimentData.label.slice(1)}
+                        </span>
+                        <span className="ai-panel-meta">
+                          {Math.round(sentimentData.confidence * 100)}% ·{' '}
+                          {formatReflectedAt(sentimentInsight!.createdAt)}
+                        </span>
+                        {!isStale && (
+                          <button
+                            type="button"
+                            className="btn-ghost btn-sm"
+                            onClick={() => navigate('/insights')}
+                          >
+                            View insights →
+                          </button>
+                        )}
+                      </div>
+                      {/* "Configure Groq" nudge — hidden when stale to reduce noise */}
+                      {!settings?.reflectionConfigured && !isStale && (
+                        <p className="reflection-richer-notice">
+                          Richer reflections available —{' '}
+                          <button
+                            type="button"
+                            className="ai-panel-link"
+                            onClick={() => navigate('/settings')}
+                          >
+                            configure Groq in Settings
+                          </button>
+                          .
+                        </p>
+                      )}
+                    </>
+                  ) : null}
+
+                  {/* State 6: Stale notice */}
+                  {isStale && (
+                    <p className="ai-stale-notice">Journal updated since this insight.</p>
+                  )}
+
+                  {/* "View insights" link under reflection card (fresh only) */}
+                  {reflectionData && !isStale && (
                     <button
                       type="button"
                       className="btn-ghost btn-sm"
+                      style={{ marginTop: 'var(--space-xs)' }}
                       onClick={() => navigate('/insights')}
                     >
                       View insights →
                     </button>
                   )}
-                </div>
-              )}
-
-              {/* State 6 stale notice */}
-              {!generateMutation.isPending && isStale && (
-                <p className="ai-stale-notice">Journal updated since this insight.</p>
+                </>
               )}
 
               {/* States 3, 5, 6: Reflect / Re-reflect menu trigger */}
-              {!generateMutation.isPending && (
+              {!generateReflectionMutation.isPending && (
                 <div className="ai-menu-wrapper">
                   <button
                     ref={reflectBtnRef}
@@ -548,7 +620,7 @@ export function JournalEditor({ date }: JournalEditorProps) {
                     className="analyze-btn"
                     onClick={() => setMenuOpen((o) => !o)}
                   >
-                    ✦ {sentimentData ? 'Re-reflect' : 'Reflect'} ▾
+                    ✦ {hasAnyInsight ? 'Re-reflect' : 'Reflect'} ▾
                   </button>
                   <AiMenu
                     actions={aiActions}
@@ -582,10 +654,7 @@ export function JournalEditor({ date }: JournalEditorProps) {
         </div>
       </div>
 
-      {/* Lexical editor — only mounted after editorSeedReady=true so that
-          InitPlugin always receives the correct initialContent on first run.
-          key={date} ensures a full remount when the user navigates to a
-          different day's entry. */}
+      {/* Lexical editor */}
       <div className="journal-lexical-wrapper">
         <LexicalComposer key={date} initialConfig={initialConfig}>
           <PlainTextPlugin
@@ -610,6 +679,7 @@ export function JournalEditor({ date }: JournalEditorProps) {
           <InitPlugin
             initialContent={initialContent}
             onReady={handleEditorReady}
+            editorRef={editorRef}
           />
         </LexicalComposer>
       </div>

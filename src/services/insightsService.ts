@@ -10,7 +10,7 @@
  */
 
 import { supabase } from './supabaseClient';
-import type { EntryInsight, SentimentResult } from '../entities/insight';
+import type { EntryInsight, SentimentResult, ReflectionResult } from '../entities/insight';
 import { ServiceError } from './errors';
 
 /**
@@ -27,8 +27,20 @@ interface GenerateInsightResponse {
 }
 
 /**
+ * Response envelope returned by the generate-reflection Edge Function on success.
+ */
+interface GenerateReflectionResponse {
+  result: ReflectionResult;
+  meta: {
+    cached: boolean;
+    generationMs: number;
+  };
+}
+
+/**
  * Error envelope returned by the Edge Function on failure.
- * `code` is one of: MODEL_LOADING | PROVIDER_ERROR | SHAPE_ERROR | (absent for auth/server errors)
+ * `code` is one of: MODEL_LOADING | PROVIDER_ERROR | SHAPE_ERROR | REFLECTION_NOT_CONFIGURED |
+ * (absent for auth/server errors)
  */
 interface EdgeFunctionErrorResponse {
   error: string;
@@ -45,10 +57,23 @@ interface InsightRow {
   created_at: string;
 }
 
+/**
+ * Result type for generateReflection().
+ * Returns a typed value (not a thrown error) for REFLECTION_NOT_CONFIGURED so the
+ * hook can silently fall back to the HF-only path without showing an error state.
+ */
+export type GenerateReflectionResult =
+  | { ok: true; data: ReflectionResult }
+  | { ok: false; code: 'REFLECTION_NOT_CONFIGURED' };
+
 export const insightsService = {
   /**
    * Fetch all cached insights for a user, optionally filtered by type.
    * Returns fully-mapped EntryInsight objects (never raw DB rows).
+   *
+   * TODO: add LIMIT and pagination support when InsightsPage adds infinite scroll or
+   * when the user base reaches 1+ year of daily usage. Current cap: unbounded.
+   * After one year of daily journaling with two insight types, this can be 730+ rows.
    */
   async getInsights(userId: string, type?: string): Promise<EntryInsight[]> {
     let query = supabase
@@ -124,5 +149,55 @@ export const insightsService = {
     }
 
     return response.result;
+  },
+
+  /**
+   * Trigger reflection generation for the given journal entry via the Edge Function.
+   *
+   * Returns a typed result rather than throwing for REFLECTION_NOT_CONFIGURED —
+   * this allows the hook to silently fall back to the legacy HF sentiment path.
+   *
+   * All other errors are thrown as ServiceErrors (same pattern as generateInsight).
+   *
+   * Throws typed ServiceErrors for:
+   *   code='HF_PROVIDER_ERROR'   — HF returned a non-200 error
+   *   code='GROQ_PROVIDER_ERROR' — Groq returned a non-200 error
+   *   code='SHAPE_ERROR'         — Groq returned invalid JSON or bad structure
+   *   code='EDGE_FUNCTION_ERROR' — transport / unknown error
+   */
+  async generateReflection(entryId: string): Promise<GenerateReflectionResult> {
+    const { data, error } = await supabase.functions.invoke('generate-reflection', {
+      body: { entryId },
+    });
+
+    if (error) {
+      let code = 'EDGE_FUNCTION_ERROR';
+      let message = error.message;
+
+      try {
+        const parsed = JSON.parse(error.message) as EdgeFunctionErrorResponse;
+        if (parsed.code) code = parsed.code;
+        if (parsed.error) message = parsed.error;
+      } catch {
+        // body was not JSON — use raw message as-is
+      }
+
+      // REFLECTION_NOT_CONFIGURED is an expected condition — not an error state.
+      if (code === 'REFLECTION_NOT_CONFIGURED') {
+        return { ok: false, code: 'REFLECTION_NOT_CONFIGURED' };
+      }
+
+      throw new ServiceError(message, code);
+    }
+
+    const response = data as GenerateReflectionResponse;
+
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[reflection] entry=${entryId} cached=${response.meta?.cached} generationMs=${response.meta?.generationMs}`,
+      );
+    }
+
+    return { ok: true, data: response.result };
   },
 };

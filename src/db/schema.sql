@@ -75,16 +75,25 @@ CREATE INDEX IF NOT EXISTS idx_waitlist_status ON public.waitlist(status);
 --   4. Update dashboard queries to aggregate latest per (entry_id, type)
 -- This is a schema migration, not an app-only change.
 CREATE TABLE IF NOT EXISTS public.insights (
-  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  entry_id    UUID REFERENCES public.entries(id) ON DELETE CASCADE,
-  type        TEXT NOT NULL CHECK (type IN ('sentiment', 'summary', 'pattern')),
-  payload     JSONB NOT NULL DEFAULT '{}',
-  source_hash TEXT,           -- SHA-256 of sourceEnvelope(content, promptVersion, model)
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id      UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  entry_id     UUID REFERENCES public.entries(id) ON DELETE CASCADE,
+  type         TEXT NOT NULL,
+  payload      JSONB NOT NULL DEFAULT '{}',
+  source_hash  TEXT,           -- SHA-256 of sourceEnvelope(content, promptVersion, model)
+  period_start DATE,           -- Weekly/monthly summary window start (Milestone 2+); NULL for entry insights
+  period_end   DATE,           -- Weekly/monthly summary window end (Milestone 2+); NULL for entry insights
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ DEFAULT now(),  -- set explicitly on every upsert
+
+  -- Named constraint so it can be dropped/replaced without querying pg_constraint.
+  CONSTRAINT insights_type_check CHECK (type IN ('sentiment', 'summary', 'pattern', 'reflection')),
 
   -- Enables idempotent upsert ON CONFLICT (user_id, entry_id, type).
   -- Drop before implementing reflection versioning (see note above).
+  -- NOTE: This constraint does NOT enforce uniqueness when entry_id IS NULL
+  -- (Postgres treats NULLs as distinct). Weekly/monthly summary rows (entry_id IS NULL)
+  -- require a separate partial unique index — see migration 003 for the index definition.
   CONSTRAINT uq_insight_entry_type UNIQUE (user_id, entry_id, type)
 );
 

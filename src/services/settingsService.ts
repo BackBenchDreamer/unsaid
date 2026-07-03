@@ -1,9 +1,9 @@
 /**
  * Settings Service — reads and writes user_settings rows.
  *
- * HF token handling:
- *  - saveHFToken() calls the encrypt-token Edge Function; the raw token
- *    never persists in the client after this call returns.
+ * Token handling:
+ *  - saveHFToken() / saveGroqToken() call the encrypt-token Edge Function;
+ *    the raw token never persists in the client after this call returns.
  *  - hasHFToken() checks if hf_token_encrypted is non-null; it does NOT
  *    return the ciphertext or the plaintext.
  */
@@ -22,10 +22,20 @@ export interface UserSettings {
    */
   aiModel: string;
   /**
-   * True when the user has a provider token configured (hf_token_encrypted IS NOT NULL).
+   * True when the user has a HF token configured (hf_token_encrypted IS NOT NULL).
    * Named aiConfigured rather than hasHFToken so the UI remains provider-agnostic.
    */
   aiConfigured: boolean;
+  /**
+   * True when the user has a Groq token configured (groq_token_encrypted IS NOT NULL).
+   * Enables the full reflection generation path.
+   */
+  reflectionConfigured: boolean;
+  /**
+   * The Groq model identifier from user_settings.groq_model.
+   * Used by generate-reflection Edge Function and by useEntryInsight for stale detection.
+   */
+  reflectionModel: string;
   updatedAt: string;
 }
 
@@ -34,6 +44,8 @@ interface SettingsRow {
   theme: string;
   hf_model: string;
   hf_token_encrypted: string | null;
+  groq_token_encrypted: string | null;
+  groq_model: string;
   updated_at: string;
 }
 
@@ -43,6 +55,8 @@ function settingsFromRow(row: SettingsRow): UserSettings {
     theme: row.theme as 'dark' | 'light',
     aiModel: row.hf_model,
     aiConfigured: row.hf_token_encrypted !== null,
+    reflectionConfigured: row.groq_token_encrypted !== null,
+    reflectionModel: row.groq_model,
     updatedAt: row.updated_at,
   };
 }
@@ -54,7 +68,7 @@ export const settingsService = {
   async getSettings(userId: string): Promise<UserSettings> {
     const { data, error } = await supabase
       .from('user_settings')
-      .select('user_id, theme, hf_model, hf_token_encrypted, updated_at')
+      .select('user_id, theme, hf_model, hf_token_encrypted, groq_token_encrypted, groq_model, updated_at')
       .eq('user_id', userId)
       .single();
 
@@ -121,5 +135,42 @@ export const settingsService = {
 
     if (error) return false;
     return (data as { hf_token_encrypted: string | null } | null)?.hf_token_encrypted !== null;
+  },
+
+  /**
+   * Send the plaintext Groq API key to the encrypt-token Edge Function.
+   * The raw token is never stored on the client after this call.
+   * Error handling is identical to saveHFToken().
+   */
+  async saveGroqToken(plainToken: string): Promise<void> {
+    const { error } = await supabase.functions.invoke('encrypt-token', {
+      body: { token: plainToken, provider: 'groq' },
+    });
+
+    if (!error) return;
+
+    if (error instanceof FunctionsHttpError) {
+      try {
+        const body = await (error.context as Response).json() as { error?: string };
+        const message = body?.error ?? error.message;
+        throw new ServiceError(message, 'EDGE_FUNCTION_ERROR');
+      } catch (jsonErr) {
+        if (jsonErr instanceof ServiceError) throw jsonErr;
+      }
+    }
+
+    throw new ServiceError(error.message, 'EDGE_FUNCTION_ERROR');
+  },
+
+  /**
+   * Update the Groq model preference.
+   */
+  async updateGroqModel(userId: string, model: string): Promise<void> {
+    const { error } = await supabase
+      .from('user_settings')
+      .update({ groq_model: model })
+      .eq('user_id', userId);
+
+    if (error) throw new ServiceError(error.message, error.code ?? 'DB_ERROR');
   },
 };
