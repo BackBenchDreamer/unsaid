@@ -408,14 +408,20 @@ The cache-hit path validates the stored payload with `isSentimentResult()` befor
 
 ### Database migrations
 
-Run in order in the Supabase SQL Editor:
+> ⚠️ **All migrations must be run before the Settings page will load correctly.**
+> If you see **"Could not find the 'groq_model' column in the schema cache"** or the Settings page shows a migration error banner, migrations 003 and/or 004 have not been applied to the live database.
 
-| File | Purpose |
-|---|---|
-| `src/db/migrations/001_insights_source_hash.sql` | Add `source_hash` column + `UNIQUE(user_id, entry_id, type)` constraint |
-| `src/db/migrations/002_remove_invalid_cached_insights.sql` | Delete all `sentiment` rows with `confidence = 0` (bug-era rows) |
-| `src/db/migrations/003_reflection_type.sql` | Add `'reflection'` insight type; add `period_start`, `period_end`, `updated_at` columns |
-| `src/db/migrations/004_groq_provider_settings.sql` | Add `groq_token_encrypted`, `groq_model` columns to `user_settings` |
+Run in order in the Supabase SQL Editor (Dashboard → SQL Editor → New query → paste → Run):
+
+| File | Purpose | Required for |
+|---|---|---|
+| `src/db/migrations/001_insights_source_hash.sql` | Add `source_hash` column + `UNIQUE(user_id, entry_id, type)` constraint | Stale detection |
+| `src/db/migrations/002_remove_invalid_cached_insights.sql` | Delete all `sentiment` rows with `confidence = 0` (bug-era rows) | Clean cache |
+| `src/db/migrations/003_reflection_type.sql` | Add `'reflection'` insight type; add `period_start`, `period_end`, `updated_at` columns | Reflection insights |
+| `src/db/migrations/004_groq_provider_settings.sql` | Add `groq_token_encrypted`, `groq_model` columns to `user_settings` | **Settings page + Groq** |
+
+After running migration 004, if settings still fail to load, reload the PostgREST schema cache:
+**Supabase Dashboard → Settings → API → Reload Schema**
 
 ## Key Invariants
 

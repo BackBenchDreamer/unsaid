@@ -1523,6 +1523,25 @@ a:hover { color: var(--accent-hover); }
   border-bottom: 1px solid var(--border);
 }
 
+.settings-error-banner {
+  padding: var(--space-md) var(--space-lg);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  margin-top: var(--space-md);
+}
+.settings-error-banner strong { color: var(--danger); }
+.settings-error-banner code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.78rem;
+  background: var(--bg-card);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
 /* ─── Empty States ─────────────────────────────────────────── */
 .empty-state {
   display: flex;

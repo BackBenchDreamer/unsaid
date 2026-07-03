@@ -6,13 +6,18 @@
  *   2. AI Configuration — two sub-sections:
  *      a. Emotion Analysis (HuggingFace) — HF token (write-only after save)
  *      b. Reflection Generation (Groq) — Groq token + model (write-only token after save)
+ *
+ * Error state design:
+ *   All form sections use a stable vertical layout (label → input → error → button row).
+ *   Error messages always appear below the input field, never beside the button.
+ *   The button row is always the last element in the form — error messages never push it.
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { useSettings, useUpdateTheme, useSaveHFToken, useSaveGroqToken, useUpdateGroqModel } from './hooks';
 
 export default function SettingsPage() {
-  const { data: settings, isLoading } = useSettings();
+  const { data: settings, isLoading, isError: settingsError } = useSettings();
   const updateTheme = useUpdateTheme();
   const saveHFToken = useSaveHFToken();
   const saveGroqToken = useSaveGroqToken();
@@ -128,6 +133,31 @@ export default function SettingsPage() {
     return (
       <div className="page settings-page">
         <div className="loading-spinner" />
+      </div>
+    );
+  }
+
+  // Settings failed to load — most likely cause is a missing database migration.
+  // The groq_model / groq_token_encrypted columns were added in migration 004.
+  // Show an actionable error rather than a silently broken page.
+  if (settingsError) {
+    return (
+      <div className="page settings-page">
+        <h1>Settings</h1>
+        <div className="settings-error-banner">
+          <strong>Settings could not be loaded.</strong>
+          <p style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+            This usually means a database migration has not been applied. Run the
+            following migrations in order in the Supabase SQL Editor:
+          </p>
+          <ol style={{ marginTop: '0.5rem', paddingLeft: '1.25rem', marginBottom: 0 }}>
+            <li><code>src/db/migrations/003_reflection_type.sql</code></li>
+            <li><code>src/db/migrations/004_groq_provider_settings.sql</code></li>
+          </ol>
+          <p style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+            After running the migrations, refresh this page.
+          </p>
+        </div>
       </div>
     );
   }
@@ -343,37 +373,71 @@ export default function SettingsPage() {
           </form>
         )}
 
-        {/* Groq model — always visible, not a secret */}
-        <div className="settings-model-info" style={{ marginTop: 'var(--space-md)' }}>
-          <form onSubmit={handleSaveGroqModel} style={{ display: 'flex', gap: 'var(--space-sm)', alignItems: 'center', flexWrap: 'wrap' }}>
-            <label htmlFor="groq-model" className="settings-label">Model</label>
+        {/* ── Groq model ────────────────────────────────
+            Redesigned as a standard vertical form-group to keep the Save button
+            in a fixed position regardless of error/success state.
+            The previous implementation placed this inside .settings-model-info
+            (a display:flex; width:fit-content container) and rendered the error
+            message as a sibling flex child outside the form — causing the button
+            to shift whenever an error appeared.
+        ─────────────────────────────────────────────── */}
+        <form
+          className="settings-token-form"
+          onSubmit={handleSaveGroqModel}
+          style={{ marginTop: 'var(--space-lg)' }}
+        >
+          <div className="form-group">
+            <label htmlFor="groq-model" className="form-label">
+              Model
+            </label>
             <input
               id="groq-model"
               type="text"
               className="form-input"
-              style={{ flex: 1, minWidth: 200 }}
               value={groqModelInput}
               onChange={(e) => {
                 setGroqModelInput(e.target.value);
                 setGroqModelSaved(false);
+                setGroqModelError('');
               }}
               placeholder="llama-3.1-8b-instant"
               autoComplete="off"
               spellCheck={false}
             />
+            <p className="settings-hint">
+              Groq model identifier. Defaults to{' '}
+              <code style={{ fontSize: '0.78rem' }}>llama-3.1-8b-instant</code>.
+              See{' '}
+              <a
+                href="https://console.groq.com/docs/models"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                console.groq.com/docs/models
+              </a>{' '}
+              for available models.
+            </p>
+          </div>
+
+          {/* Error always appears below the input, above the button row —
+              the button row is the last element and never moves */}
+          {groqModelError && <p className="form-error">{groqModelError}</p>}
+
+          <div style={{ display: 'flex', gap: 'var(--space-sm)', alignItems: 'center' }}>
             <button
               type="submit"
-              className="btn-ghost btn-sm"
+              className="btn-primary"
               disabled={updateGroqModel.isPending || !groqModelInput.trim()}
             >
-              {updateGroqModel.isPending ? 'Saving…' : 'Save'}
+              {updateGroqModel.isPending ? 'Saving…' : 'Save Model'}
             </button>
             {groqModelSaved && (
-              <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>✓ Model saved</span>
+              <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>
+                ✓ Model saved
+              </span>
             )}
-          </form>
-          {groqModelError && <p className="form-error" style={{ marginTop: '0.25rem' }}>{groqModelError}</p>}
-        </div>
+          </div>
+        </form>
       </section>
     </div>
   );
