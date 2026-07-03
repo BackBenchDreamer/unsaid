@@ -50,13 +50,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    // Listen for auth changes.
+    // Listen for auth state changes (magic link callback, tab focus refresh, sign-out).
+    // MUST set isLoading=true before the async profile fetch so the router never makes
+    // routing decisions in the window where session exists but user is still null.
+    // Without this, clicking a magic link causes: session=set, user=null → ProtectedRoute
+    // sees isApproved=false and redirects to /login before the profile even arrives.
     const { data: { subscription } } = authService.onAuthStateChange((_event, s) => {
       setSession(s);
       if (s) {
-        loadProfile();
+        setIsLoading(true);
+        loadProfile().finally(() => setIsLoading(false));
       } else {
         setUser(null);
+        setIsLoading(false);
       }
     });
 

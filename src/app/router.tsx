@@ -34,7 +34,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (isLoading) return <LoadingFallback />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (isPending) return <Navigate to="/waitlist" replace />;
-  if (!isApproved) return <Navigate to="/login" replace />;
+  if (!isApproved) return <Navigate to="/waitlist" replace />;
 
   return <>{children}</>;
 }
