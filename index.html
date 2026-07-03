@@ -1,14 +1,51 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="UnSaid — A private journaling app for your unspoken thoughts." />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <title>UnSaid — Private Journal</title>
+    <!-- Inline loading state: visible immediately before React mounts.
+         Prevents the raw blank page users see while JS bundles load.
+         Removed by React's first render via the #root replacement. -->
+    <style>
+      html[data-theme="dark"] { background: #0e0e10; }
+      html[data-theme="light"] { background: #fafaf9; }
+      #pre-load {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        gap: 1rem;
+        font-family: system-ui, sans-serif;
+      }
+      #pre-load-spinner {
+        width: 32px;
+        height: 32px;
+        border: 2px solid rgba(255,255,255,0.12);
+        border-top-color: #b5965a;
+        border-radius: 50%;
+        animation: pre-spin 0.75s linear infinite;
+      }
+      #pre-load-text {
+        color: rgba(255,255,255,0.4);
+        font-size: 0.85rem;
+        letter-spacing: 0.02em;
+      }
+      @keyframes pre-spin { to { transform: rotate(360deg); } }
+      /* Hide the pre-load shell once React mounts (root gets children) */
+      #root:not(:empty) + #pre-load { display: none; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <!-- Shown only until React mounts; hidden by CSS once #root has children -->
+    <div id="pre-load" aria-hidden="true">
+      <div id="pre-load-spinner"></div>
+      <span id="pre-load-text">Loading…</span>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

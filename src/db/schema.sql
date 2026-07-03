@@ -62,14 +62,30 @@ CREATE TABLE IF NOT EXISTS public.waitlist (
 
 CREATE INDEX IF NOT EXISTS idx_waitlist_status ON public.waitlist(status);
 
--- ─── Insights (optional materialized cache) ────────────────
+-- ─── Insights (AI reflection cache) ────────────────────────
+-- One row per (user_id, entry_id, type) — enforced by uq_insight_entry_type.
+-- payload stores the full result + _meta: { promptVersion, model, generatedAt, generationMs }
+-- source_hash is SHA-256 of sourceEnvelope(content, promptVersion, model);
+--   NULL on legacy rows (treated as always-stale until re-reflected).
+--
+-- FUTURE VERSIONING NOTE: to support multiple reflections per entry, you must:
+--   1. DROP CONSTRAINT uq_insight_entry_type
+--   2. ADD COLUMN reflected_at TIMESTAMPTZ DEFAULT now() (or version INT)
+--   3. Change Edge Function upserts to inserts
+--   4. Update dashboard queries to aggregate latest per (entry_id, type)
+-- This is a schema migration, not an app-only change.
 CREATE TABLE IF NOT EXISTS public.insights (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   entry_id    UUID REFERENCES public.entries(id) ON DELETE CASCADE,
   type        TEXT NOT NULL CHECK (type IN ('sentiment', 'summary', 'pattern')),
   payload     JSONB NOT NULL DEFAULT '{}',
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  source_hash TEXT,           -- SHA-256 of sourceEnvelope(content, promptVersion, model)
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  -- Enables idempotent upsert ON CONFLICT (user_id, entry_id, type).
+  -- Drop before implementing reflection versioning (see note above).
+  CONSTRAINT uq_insight_entry_type UNIQUE (user_id, entry_id, type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_insights_user ON public.insights(user_id, type);

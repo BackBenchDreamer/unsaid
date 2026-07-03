@@ -1,0 +1,49 @@
+-- ============================================================
+-- Migration 002 — Remove invalid cached AI insight rows
+--
+-- Root cause: two cooperating bugs in the Edge Function caused
+-- confidence=0 rows to be permanently cached in the insights table.
+--
+-- Bug A — wrong HF response shape assumption:
+--   The Inference API returns HFEmotionScore[] (flat) for a single string
+--   input, but the old code checked Array.isArray(hfData[0]) expecting the
+--   nested HFEmotionScore[][] batch form.  The check always failed, so the
+--   else-branch emitted { score:0, label:'neutral', confidence:0 } even on
+--   a valid 200 response with real emotion scores.
+--
+-- Bug B — error fallback persisted to DB:
+--   When generateSentiment() failed (including Bug A above, or a non-200 HF
+--   response), the catch block assigned confidence=0 to sentimentResult and
+--   execution fell through to the upsert — writing the poisoned row with
+--   source_hash set.  Because the hash matched the content, the cache-hit path
+--   served this row on every subsequent request without calling HF again.
+--
+-- Fix (deployed in Edge Function):
+--   - generateSentiment() now throws typed errors (HFModelLoadingError,
+--     HFProviderError, HFShapeError) for all failure modes.
+--   - The handler returns an HTTP error response rather than persisting anything.
+--   - Only a validated, successful SentimentResult (confidence > 0) is stored.
+--   - isSentimentResult() now enforces full invariants: finite score in [-1,1],
+--     valid label literal, finite confidence in (0,1].
+--   - The cache-hit path validates the stored row with isSentimentResult() before
+--     serving it; invalid rows emit a CACHE_INVALID log and are regenerated.
+--   - _meta now includes provider: "huggingface" for backend portability.
+--
+-- Why confidence=0 is a safe delete predicate:
+--   The j-hartmann/emotion-english-distilroberta-base model returns probability
+--   scores that sum to 1 across all seven emotion labels.  After mapping to the
+--   three sentiment categories (positive = joy+surprise, negative = anger+
+--   disgust+fear+sadness, neutral = neutral), the winning category always
+--   carries a score > 0, because at least one of the seven probabilities is
+--   non-zero.  Therefore confidence=0 in any stored row is exclusively a
+--   product of the fallback path — it can never arise from real model output.
+--   Deleting all rows with confidence=0 is safe and complete.
+--
+-- Run in Supabase SQL Editor.
+-- Safe to run multiple times (idempotent via WHERE; DELETE on non-existent rows
+-- is a no-op in PostgreSQL).
+-- ============================================================
+
+DELETE FROM public.insights
+WHERE type = 'sentiment'
+  AND (payload->>'confidence')::numeric = 0;

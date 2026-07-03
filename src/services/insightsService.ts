@@ -1,35 +1,59 @@
 /**
- * Insights Service — calls Edge Functions for sentiment analysis
- * and retrieves cached insights.
+ * Insights Service — triggers Edge Functions for AI reflection
+ * and retrieves cached insights from the DB.
  *
- * All computation happens server-side.
- * Client only triggers and reads results.
+ * All inference happens server-side (Edge Functions).
+ * This service only triggers and reads results — no business logic.
+ *
+ * Cache-check logic lives inside the Edge Function.
+ * Stale-detection logic lives in src/features/insights/hooks.ts.
  */
 
 import { supabase } from './supabaseClient';
-import type { SentimentResult } from '../entities/insight';
+import type { EntryInsight, SentimentResult } from '../entities/insight';
 import { ServiceError } from './errors';
+
+/**
+ * Response envelope returned by the analyze-sentiment Edge Function on success.
+ */
+interface GenerateInsightResponse {
+  result: SentimentResult;
+  meta: {
+    /** True when the Edge Function returned a cached result (no inference call). */
+    cached: boolean;
+    /** Wall-clock ms of the inference call. 0 when cached. */
+    generationMs: number;
+  };
+}
+
+/**
+ * Error envelope returned by the Edge Function on failure.
+ * `code` is one of: MODEL_LOADING | PROVIDER_ERROR | SHAPE_ERROR | (absent for auth/server errors)
+ */
+interface EdgeFunctionErrorResponse {
+  error: string;
+  code?: string;
+}
+
+/** Raw DB row shape from the insights table. */
+interface InsightRow {
+  id: string;
+  entry_id: string | null;
+  type: string;
+  payload: Record<string, unknown>;
+  source_hash: string | null;
+  created_at: string;
+}
 
 export const insightsService = {
   /**
-   * Analyze sentiment for a journal entry via Edge Function.
+   * Fetch all cached insights for a user, optionally filtered by type.
+   * Returns fully-mapped EntryInsight objects (never raw DB rows).
    */
-  async analyzeEntrySentiment(entryId: string): Promise<SentimentResult> {
-    const { data, error } = await supabase.functions.invoke('analyze-sentiment', {
-      body: { entryId },
-    });
-
-    if (error) throw new ServiceError(error.message, 'EDGE_FUNCTION_ERROR');
-    return data as SentimentResult;
-  },
-
-  /**
-   * Get cached insights for the current user.
-   */
-  async getInsights(userId: string, type?: string): Promise<Array<{ id: string; type: string; payload: Record<string, unknown>; createdAt: string }>> {
+  async getInsights(userId: string, type?: string): Promise<EntryInsight[]> {
     let query = supabase
       .from('insights')
-      .select('*')
+      .select('id, entry_id, type, payload, source_hash, created_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
@@ -40,11 +64,65 @@ export const insightsService = {
     const { data, error } = await query;
     if (error) throw new ServiceError(error.message, error.code ?? 'DB_ERROR');
 
-    return (data ?? []).map((r: { id: string; type: string; payload: Record<string, unknown>; created_at: string }) => ({
+    return (data ?? []).map((r: InsightRow) => ({
       id: r.id,
-      type: r.type,
+      entryId: r.entry_id,
+      type: r.type as EntryInsight['type'],
       payload: r.payload,
+      sourceHash: r.source_hash,
       createdAt: r.created_at,
     }));
+  },
+
+  /**
+   * Trigger AI reflection for the given journal entry via the Edge Function.
+   *
+   * The Edge Function:
+   *   - Checks source_hash cache — returns immediately if content unchanged
+   *     AND the cached row passes structural validation (confidence > 0).
+   *   - Calls the AI provider only on cache miss.
+   *   - Stores the result + _meta + source_hash ONLY on successful generation.
+   *
+   * Throws typed ServiceErrors so the UI can present appropriate messages:
+   *   code='MODEL_LOADING'  — HF cold start; user should retry in ~20s
+   *   code='PROVIDER_ERROR' — HF returned a non-200 error
+   *   code='SHAPE_ERROR'    — HF returned an unrecognised response format
+   *   code='EDGE_FUNCTION_ERROR' — transport / unknown error
+   */
+  async generateInsight(entryId: string): Promise<SentimentResult> {
+    const { data, error } = await supabase.functions.invoke('analyze-sentiment', {
+      body: { entryId },
+    });
+
+    // supabase-js wraps non-2xx Edge Function responses as an `error` with the
+    // raw body in `error.message`.  We parse it to recover the structured code.
+    if (error) {
+      // Attempt to extract the structured error body the Edge Function returned.
+      let code = 'EDGE_FUNCTION_ERROR';
+      let message = error.message;
+
+      try {
+        // The Supabase client surfaces the response body as error.message when
+        // the function returns a non-2xx status.
+        const parsed = JSON.parse(error.message) as EdgeFunctionErrorResponse;
+        if (parsed.code) code = parsed.code;
+        if (parsed.error) message = parsed.error;
+      } catch {
+        // body was not JSON — use raw message as-is
+      }
+
+      throw new ServiceError(message, code);
+    }
+
+    const response = data as GenerateInsightResponse;
+
+    // Log cache metadata for observability — not surfaced in the UI.
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[insight] entry=${entryId} cached=${response.meta?.cached} generationMs=${response.meta?.generationMs}`,
+      );
+    }
+
+    return response.result;
   },
 };

@@ -8,14 +8,24 @@
  *    return the ciphertext or the plaintext.
  */
 
+import { FunctionsHttpError } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import { ServiceError } from './errors';
 
 export interface UserSettings {
   userId: string;
   theme: 'dark' | 'light';
-  hfModel: string;
-  hasHFToken: boolean;
+  /**
+   * The AI model identifier from user_settings.hf_model.
+   * Provider-agnostic name — the column name is HF-specific but the value
+   * is treated as an opaque model identifier throughout the client.
+   */
+  aiModel: string;
+  /**
+   * True when the user has a provider token configured (hf_token_encrypted IS NOT NULL).
+   * Named aiConfigured rather than hasHFToken so the UI remains provider-agnostic.
+   */
+  aiConfigured: boolean;
   updatedAt: string;
 }
 
@@ -31,8 +41,8 @@ function settingsFromRow(row: SettingsRow): UserSettings {
   return {
     userId: row.user_id,
     theme: row.theme as 'dark' | 'light',
-    hfModel: row.hf_model,
-    hasHFToken: row.hf_token_encrypted !== null,
+    aiModel: row.hf_model,
+    aiConfigured: row.hf_token_encrypted !== null,
     updatedAt: row.updated_at,
   };
 }
@@ -69,13 +79,34 @@ export const settingsService = {
   /**
    * Send the plaintext HF token to the encrypt-token Edge Function.
    * The raw token is never stored on the client after this call.
+   *
+   * supabase.functions.invoke() wraps non-2xx responses in a FunctionsHttpError
+   * whose generic .message is always "Edge Function returned a non-2xx status code".
+   * The real error body lives in error.context (a Response object) — we extract it
+   * so the UI can show the actual server-side message to the developer.
    */
   async saveHFToken(plainToken: string): Promise<void> {
     const { error } = await supabase.functions.invoke('encrypt-token', {
       body: { token: plainToken },
     });
 
-    if (error) throw new ServiceError(error.message, 'EDGE_FUNCTION_ERROR');
+    if (!error) return;
+
+    // Extract the real JSON body from the raw Response object so we can
+    // surface a meaningful error message instead of the Supabase wrapper's
+    // generic "Edge Function returned a non-2xx status code".
+    if (error instanceof FunctionsHttpError) {
+      try {
+        const body = await (error.context as Response).json() as { error?: string };
+        const message = body?.error ?? error.message;
+        throw new ServiceError(message, 'EDGE_FUNCTION_ERROR');
+      } catch (jsonErr) {
+        // json() itself threw (e.g. body already consumed) — fall through
+        if (jsonErr instanceof ServiceError) throw jsonErr;
+      }
+    }
+
+    throw new ServiceError(error.message, 'EDGE_FUNCTION_ERROR');
   },
 
   /**

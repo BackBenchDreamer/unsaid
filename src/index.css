@@ -157,8 +157,8 @@ a:hover { color: var(--accent-hover); }
 }
 
 .loading-spinner {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: 50%;
@@ -1095,6 +1095,141 @@ a:hover { color: var(--accent-hover); }
 }
 .analyze-btn:hover { background: rgba(201,168,122,0.2); }
 .analyze-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ─── AI Panel (JournalEditor) ──────────────────────────────── */
+.ai-panel {
+  padding: var(--space-md) 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.ai-panel-notice {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+.ai-panel-link {
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+  padding: 0;
+  font-family: inherit;
+}
+
+.ai-panel-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.ai-panel-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ai-stale-notice {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* AI Menu popover */
+.ai-menu-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.ai-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  min-width: 200px;
+  padding: var(--space-xs) 0;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.ai-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  font-family: var(--font-sans);
+}
+.ai-menu-item:hover:not(:disabled) { background: var(--bg-hover); }
+.ai-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ai-menu-item-reason {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.ai-menu-footer {
+  padding: var(--space-xs) var(--space-md);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-xs);
+}
+
+/* ─── Insight Distribution Bar (InsightsPage) ───────────────── */
+.insight-distribution-bar {
+  display: flex;
+  height: 8px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  gap: 2px;
+  margin: var(--space-sm) 0;
+}
+
+.insight-distribution-segment {
+  height: 100%;
+  border-radius: var(--radius-full);
+  min-width: 4px;
+  transition: flex var(--transition-base);
+}
+.insight-distribution-segment.positive { background: var(--success); }
+.insight-distribution-segment.negative { background: var(--danger); }
+.insight-distribution-segment.neutral  { background: var(--text-muted); }
+
+.insight-distribution-labels {
+  display: flex;
+  gap: var(--space-md);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+  margin-top: var(--space-xs);
+}
+.insight-distribution-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.insight-distribution-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 
 /* ─── Admin ────────────────────────────────────────────────── */
 .tab-bar {

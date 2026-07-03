@@ -6,7 +6,7 @@ UnSaid is an invite-only personal journaling app with offline-first sync, mood t
 
 ## Features
 
-- **Daily journal** — distraction-free writing (Lexical editor) with autosave (1.5 s debounce) and offline queuing
+- **Daily journal** — one entry per calendar day; distraction-free writing (Lexical editor) with autosave (1.5 s debounce) and offline queuing
 - **Mood tracking** — tag each entry: terrible / bad / meh / good / great
 - **Tagging** — free-form lowercase tags per entry (max 20)
 - **Streaks** — current and longest consecutive-day streak, computed from local calendar dates
@@ -173,9 +173,48 @@ Admin users (`profiles.role = 'admin'`) can approve/reject waitlist applicants f
 
 Writes queue to IndexedDB (`unsaid-sync` database, version 1) before being sent to Supabase. The queue drains automatically on reconnect, every 30 seconds while online, or after each write attempt. Mutation IDs are deterministic (`userId:entryDate:action`) — rapid edits to the same entry replace the pending mutation rather than queuing duplicates. The server uses `UPSERT ON CONFLICT (user_id, entry_date)`, so replayed mutations are idempotent.
 
+## Journal Workflow
+
+### One entry per day
+
+The database enforces `UNIQUE (user_id, entry_date)`. All writes use `UPSERT ON CONFLICT (user_id, entry_date)`, so writing to the same day always updates the existing entry — it is impossible to create a duplicate.
+
+### Opening an existing entry
+
+The History page (`/history`) lists all past entries grouped by month. Clicking any entry navigates to `/journal/YYYY-MM-DD`. The editor:
+
+1. Fetches the entry for that date via `useEntryByDate(date)`.
+2. Waits for the fetch to resolve before mounting the Lexical editor — this prevents a race condition where the editor initialises with empty content before the DB response arrives.
+3. Seeds the Lexical editor with the stored content, mood, and tags from the DB.
+4. Sets `lastSavedContent` to the fetched content so the AI stale-detection baseline is correct from the moment the entry opens.
+5. The `Saved HH:MM` indicator reflects the existing entry's last save, not a new write.
+
+If there is no entry for the given date (e.g. navigating to a future date or a past day with no entry), the editor opens blank and the first keystroke creates the entry via autosave.
+
+### Autosave
+
+Autosave fires 1 500 ms after the last keystroke (`AUTOSAVE_DEBOUNCE_MS`). It sends the current plain-text content of the Lexical editor together with the current mood and tags. The write goes through `useUpsertEntry` → `syncEngine.enqueueEntry()` → `journalService.upsertEntry()`.
+
+The editor only starts listening for changes (`OnChangePlugin`) **after** the initial seed completes (gated by `isEditorReadyRef`), so opening an existing entry never triggers an autosave for empty content.
+
+When mood or tags change without a simultaneous text edit, a separate 300 ms debounce re-saves the entry using `lastSavedContentRef.current` as the content (not `existingEntry.content`, which could be stale after in-session edits).
+
+### Editor initialisation — implementation notes
+
+The `LexicalComposer` is not mounted until `editorSeedReady = true`, which is set only after `useEntryByDate` resolves (`isLoading = false`). This eliminates a previous bug where:
+
+1. `LexicalComposer` mounted immediately with `initialContent = ''`.
+2. `InitPlugin` (Lexical's init hook) ran synchronously, seeding the editor with `''` and marking `isEditorReadyRef = true`.
+3. The fetch resolved later, but the seeding guard `!isEditorReadyRef.current` was already tripped → the editor stayed blank.
+4. The first autosave (triggered by `OnChangePlugin` on the empty doc) silently overwrote the DB entry with empty content.
+
+The fix gates the `LexicalComposer` on `editorSeedReady`, so `InitPlugin` always receives the correct content on its first (and only) run.
+
 ## Key Invariants
 
 - **`entry_date` is always a user-local `"YYYY-MM-DD"` string** — never derived from `toISOString()` (UTC). Use `getTodayLocal()` from `src/shared/utils/dates.ts`.
+- **One entry per user per calendar day** — enforced by `UNIQUE (user_id, entry_date)`. All writes use `UPSERT ON CONFLICT`.
 - **Never call Supabase directly from `.tsx` components** — all data access goes through `src/services/` and then React Query hooks in feature `hooks.ts` files.
 - **All writes go through `syncEngine.enqueueEntry()`** — not direct service calls.
 - **`insights` has no client INSERT policy** — only Edge Functions (service role) can write insights.
+- **`LexicalComposer` only mounts after `editorSeedReady = true`** — never with stale/empty `initialContent`.

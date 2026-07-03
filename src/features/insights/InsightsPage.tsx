@@ -1,30 +1,23 @@
 /**
- * Insights Page — sentiment analysis results, readable not raw JSON.
+ * Insights Page — AI reflection dashboard.
+ *
+ * Four progressive states based on user journey:
+ *   A. No journal entries yet
+ *   B. Entries exist but AI not configured
+ *   C. AI configured but nothing reflected yet
+ *   D. Insights exist — full dashboard with distribution bar + cards
  */
 
-import React, { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useAuth } from '../../app/providers/AuthProvider';
-import { insightsService } from '../../services/insightsService';
-import type { SentimentResult } from '../../entities/insight';
+import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useInsights, formatReflectedAt } from './hooks';
+import { useSettings } from '../settings/hooks';
+import { useEntries } from '../journal/hooks';
+import { isSentimentPayload } from '../../entities/insight';
+import type { EntryInsight } from '../../entities/insight';
+import { formatDisplayDate } from '../../shared/utils/dates';
 
-interface InsightRow {
-  id: string;
-  type: string;
-  payload: Record<string, unknown>;
-  createdAt: string;
-}
-
-function sentimentPayload(payload: Record<string, unknown>): SentimentResult | null {
-  if (
-    typeof payload.score === 'number' &&
-    typeof payload.label === 'string' &&
-    typeof payload.confidence === 'number'
-  ) {
-    return payload as unknown as SentimentResult;
-  }
-  return null;
-}
+// ─── Sentiment helpers ─────────────────────────────────────
 
 const SENTIMENT_EMOJI: Record<string, string> = {
   positive: '😊',
@@ -32,118 +25,226 @@ const SENTIMENT_EMOJI: Record<string, string> = {
   negative: '😔',
 };
 
-function SentimentCard({ insight }: { insight: InsightRow }) {
-  const s = sentimentPayload(insight.payload);
+const SENTIMENT_DOT_COLOR: Record<string, string> = {
+  positive: 'var(--success)',
+  negative: 'var(--danger)',
+  neutral: 'var(--text-muted)',
+};
+
+// ─── SentimentCard ─────────────────────────────────────────
+
+interface SentimentCardProps {
+  insight: EntryInsight;
+  entryDate: string | undefined;
+}
+
+function SentimentCard({ insight, entryDate }: SentimentCardProps) {
+  const navigate = useNavigate();
+  const s = isSentimentPayload(insight.payload) ? insight.payload : null;
   if (!s) return null;
 
   const pct = Math.round(s.confidence * 100);
-  const cls = `sentiment-pill sentiment-${s.label}`;
 
   return (
     <div className="insight-card">
-      <div>
-        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.5rem' }}>
-          Sentiment
+      <div style={{ flex: 1 }}>
+        {entryDate && (
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>
+            {formatDisplayDate(entryDate)}
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}>
+          <span className={`sentiment-pill sentiment-${s.label}`}>
+            {SENTIMENT_EMOJI[s.label]}{' '}
+            {s.label.charAt(0).toUpperCase() + s.label.slice(1)}
+          </span>
+          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+            {pct}% confidence
+          </span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            {formatReflectedAt(insight.createdAt)}
+          </span>
         </div>
-        <span className={cls}>
-          {SENTIMENT_EMOJI[s.label]} {s.label.charAt(0).toUpperCase() + s.label.slice(1)}
-        </span>
-        <span style={{ marginLeft: '0.75rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-          {pct}% confidence
-        </span>
       </div>
-      <div className="insight-meta">
-        {new Date(insight.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-      </div>
+      {entryDate && (
+        <button
+          type="button"
+          className="btn-ghost btn-sm"
+          onClick={() => navigate(`/journal/${entryDate}`)}
+        >
+          Open entry →
+        </button>
+      )}
     </div>
   );
 }
 
+// ─── Page ──────────────────────────────────────────────────
+
 export default function InsightsPage() {
-  const { user } = useAuth();
-  const queryClient = useQueryClient();
-  const [analyseEntryId, setAnalyseEntryId] = useState('');
-  const [analyseError, setAnalyseError] = useState('');
+  const navigate = useNavigate();
+  const { data: insights, isLoading: insightsLoading } = useInsights();
+  const { data: settings, isLoading: settingsLoading } = useSettings();
+  const { data: entries, isLoading: entriesLoading } = useEntries(1);
 
-  const { data: insights, isLoading } = useQuery({
-    queryKey: ['insights', user?.id],
-    queryFn: () => insightsService.getInsights(user!.id),
-    enabled: !!user,
+  // Build entryId → entryDate map for card links
+  const { data: allEntries } = useEntries(500);
+  const entriesById = useMemo(() => {
+    const m = new Map<string, string>();
+    (allEntries ?? []).forEach((e) => m.set(e.id, e.entryDate));
+    return m;
+  }, [allEntries]);
+
+  const isLoading = insightsLoading || settingsLoading || entriesLoading;
+
+  if (isLoading) {
+    return (
+      <div className="page insights-page">
+        <h1>Insights</h1>
+        <div className="loading-spinner" />
+      </div>
+    );
+  }
+
+  // Filter to sentiment insights with valid payloads
+  const sentimentInsights = (insights ?? []).filter(
+    (i) => i.type === 'sentiment' && isSentimentPayload(i.payload),
+  );
+
+  // ── State A: no entries at all ──────────────────────────
+  if (!entries || entries.length === 0) {
+    return (
+      <div className="page insights-page">
+        <h1>Insights</h1>
+        <div className="empty-state">
+          <p className="empty-icon">✦</p>
+          <p className="empty-title">Start writing to unlock insights</p>
+          <p className="empty-subtitle">
+            Write your first journal entry to begin discovering patterns.
+          </p>
+          <button
+            className="btn-primary"
+            onClick={() => navigate('/journal')}
+            style={{ marginTop: '1rem' }}
+          >
+            Go to Journal
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── State B: entries exist, AI not configured ───────────
+  if (!settings?.aiConfigured) {
+    return (
+      <div className="page insights-page">
+        <h1>Insights</h1>
+        <div className="empty-state">
+          <p className="empty-icon">✦</p>
+          <p className="empty-title">AI Insights not enabled</p>
+          <p className="empty-subtitle">
+            Configure your AI token to unlock emotional analysis of your writing.
+          </p>
+          <button
+            className="btn-primary"
+            onClick={() => navigate('/settings')}
+            style={{ marginTop: '1rem' }}
+          >
+            Open Settings
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── State C: AI configured, nothing reflected yet ───────
+  if (sentimentInsights.length === 0) {
+    return (
+      <div className="page insights-page">
+        <h1>Insights</h1>
+        <div className="empty-state">
+          <p className="empty-icon">✦</p>
+          <p className="empty-title">Nothing reflected yet</p>
+          <p className="empty-subtitle">
+            Open any journal entry and press{' '}
+            <strong>Reflect</strong> to see your emotional patterns here.
+          </p>
+          <button
+            className="btn-primary"
+            onClick={() => navigate('/journal')}
+            style={{ marginTop: '1rem' }}
+          >
+            Go to Journal
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── State D: dashboard ──────────────────────────────────
+
+  // Mood distribution counts
+  const counts = { positive: 0, neutral: 0, negative: 0 };
+  sentimentInsights.forEach((i) => {
+    const s = isSentimentPayload(i.payload) ? i.payload : null;
+    if (s) counts[s.label]++;
   });
-
-  const analyseMutation = useMutation({
-    mutationFn: (entryId: string) => insightsService.analyzeEntrySentiment(entryId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['insights', user?.id] });
-      setAnalyseEntryId('');
-      setAnalyseError('');
-    },
-    onError: (err) => {
-      setAnalyseError(err instanceof Error ? err.message : 'Analysis failed');
-    },
-  });
-
-  const handleAnalyse = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!analyseEntryId.trim()) return;
-    setAnalyseError('');
-    analyseMutation.mutate(analyseEntryId.trim());
-  };
-
-  const sentimentInsights = (insights ?? []).filter((i) => i.type === 'sentiment');
+  const total = sentimentInsights.length;
 
   return (
     <div className="page insights-page">
       <h1>Insights</h1>
       <p className="page-subtitle">Emotional patterns from your writing.</p>
 
-      {/* Analyse by entry ID */}
+      {/* ── Mood distribution bar ─────────────────────── */}
       <section style={{ marginBottom: 'var(--space-2xl)' }}>
-        <form onSubmit={handleAnalyse} style={{ display: 'flex', gap: 'var(--space-sm)', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div className="form-group" style={{ flex: '1', minWidth: '200px' }}>
-            <label htmlFor="entry-id" className="form-label">Analyse an entry</label>
-            <input
-              id="entry-id"
-              type="text"
-              className="form-input"
-              value={analyseEntryId}
-              onChange={(e) => setAnalyseEntryId(e.target.value)}
-              placeholder="Paste an entry UUID…"
-              style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
-            />
-          </div>
-          <button
-            type="submit"
-            className="analyze-btn"
-            disabled={analyseMutation.isPending || !analyseEntryId.trim()}
-            style={{ marginBottom: '0' }}
-          >
-            {analyseMutation.isPending ? '…' : '✦ Analyse'}
-          </button>
-        </form>
-        {analyseError && (
-          <p className="form-error" style={{ marginTop: 'var(--space-xs)' }}>{analyseError}</p>
-        )}
-      </section>
+        <h2 style={{ fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: 'var(--space-sm)', fontWeight: 600 }}>
+          Mood overview
+        </h2>
 
-      {/* Results */}
-      {isLoading ? (
-        <div className="loading-spinner" />
-      ) : sentimentInsights.length === 0 ? (
-        <div className="empty-state">
-          <p className="empty-icon">✦</p>
-          <p className="empty-title">No insights yet</p>
-          <p className="empty-subtitle">
-            Paste an entry ID above to analyse its emotional tone.
-          </p>
+        <div className="insight-distribution-bar">
+          {(['positive', 'neutral', 'negative'] as const).map((label) => {
+            const flex = total > 0 ? counts[label] / total : 0;
+            if (flex === 0) return null;
+            return (
+              <div
+                key={label}
+                className={`insight-distribution-segment ${label}`}
+                style={{ flex }}
+                title={`${counts[label]} ${label}`}
+              />
+            );
+          })}
         </div>
-      ) : (
-        <div className="insights-grid">
-          {sentimentInsights.map((insight) => (
-            <SentimentCard key={insight.id} insight={insight} />
+
+        <div className="insight-distribution-labels">
+          {(['positive', 'neutral', 'negative'] as const).map((label) => (
+            <span key={label} className="insight-distribution-label">
+              <span
+                className="insight-distribution-dot"
+                style={{ background: SENTIMENT_DOT_COLOR[label] }}
+              />
+              {counts[label]} {label}
+            </span>
           ))}
         </div>
-      )}
+      </section>
+
+      {/* ── Recent reflections ────────────────────────── */}
+      <section>
+        <h2 style={{ fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: 'var(--space-md)', fontWeight: 600 }}>
+          Recent reflections
+        </h2>
+        <div className="insights-grid">
+          {sentimentInsights.map((insight) => (
+            <SentimentCard
+              key={insight.id}
+              insight={insight}
+              entryDate={insight.entryId ? entriesById.get(insight.entryId) : undefined}
+            />
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

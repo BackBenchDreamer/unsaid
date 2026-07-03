@@ -4,13 +4,32 @@
 // POST { token: string }
 // Authorization: Bearer <access_token>
 //
-// Encrypts the plaintext HuggingFace API token using AES-GCM
-// and stores the ciphertext in user_settings.hf_token_encrypted.
+// Encrypts the plaintext AI provider token using AES-GCM and stores
+// the ciphertext in user_settings.hf_token_encrypted.
 //
 // The raw token is NEVER returned to the client and is NOT logged.
+//
+// Requires the APP_ENCRYPTION_KEY secret to be set:
+//   supabase secrets set APP_ENCRYPTION_KEY=<64-hex-char-key>
+//   (32 bytes = 256 bits for AES-256-GCM)
+//   Generate with: openssl rand -hex 32
 // ============================================================
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// ─── CORS + JSON helpers ──────────────────────────────────────
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+  });
+}
 
 // ─── AES-GCM encryption helper ───────────────────────────────
 
@@ -23,22 +42,25 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 async function encryptToken(plaintext: string, keyHex: string): Promise<string> {
-  const keyBytes = hexToBytes(keyHex);
+  if (!keyHex || keyHex.length !== 64) {
+    throw new Error(
+      `APP_ENCRYPTION_KEY must be a 64-character hex string (32 bytes). Got length: ${keyHex?.length ?? 0}`,
+    );
+  }
+
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    hexToBytes(keyHex),
     { name: 'AES-GCM' },
     false,
     ['encrypt'],
   );
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encoded = new TextEncoder().encode(plaintext);
-
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     cryptoKey,
-    encoded,
+    new TextEncoder().encode(plaintext),
   );
 
   // Concat iv + ciphertext → base64
@@ -54,25 +76,32 @@ async function encryptToken(plaintext: string, keyHex: string): Promise<string> 
 Deno.serve(async (req: Request) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      },
-    });
+    return new Response(null, { headers: CORS_HEADERS });
   }
 
+  const encryptionKey = Deno.env.get('APP_ENCRYPTION_KEY') ?? '';
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-  const encryptionKey = Deno.env.get('APP_ENCRYPTION_KEY')!;
+
+  // Fail fast with a clear message if the secret is missing
+  if (!encryptionKey || encryptionKey.length !== 64) {
+    console.error(
+      `APP_ENCRYPTION_KEY misconfigured. Expected 64 hex chars, got: ${encryptionKey?.length ?? 0}`,
+    );
+    return json(
+      {
+        error:
+          'Server configuration error: APP_ENCRYPTION_KEY is missing or has the wrong length. ' +
+          'Run: supabase secrets set APP_ENCRYPTION_KEY=$(openssl rand -hex 32)',
+      },
+      500,
+    );
+  }
 
   // ── 1. Verify caller JWT ─────────────────────────────────
   const authHeader = req.headers.get('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
-    return new Response(JSON.stringify({ error: 'Missing authorization header' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return json({ error: 'Missing authorization header' }, 401);
   }
   const jwtToken = authHeader.slice(7);
 
@@ -83,10 +112,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: { user }, error: authError } = await userClient.auth.getUser(jwtToken);
   if (authError || !user) {
-    return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return json({ error: 'Invalid or expired token' }, 401);
   }
 
   // ── 2. Parse body ────────────────────────────────────────
@@ -95,17 +121,11 @@ Deno.serve(async (req: Request) => {
     const body = await req.json();
     plainToken = body.token;
   } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return json({ error: 'Invalid JSON body' }, 400);
   }
 
   if (!plainToken || typeof plainToken !== 'string' || plainToken.trim().length === 0) {
-    return new Response(JSON.stringify({ error: 'token must be a non-empty string' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return json({ error: 'token must be a non-empty string' }, 400);
   }
 
   // ── 3. Encrypt ───────────────────────────────────────────
@@ -113,11 +133,9 @@ Deno.serve(async (req: Request) => {
   try {
     ciphertext = await encryptToken(plainToken.trim(), encryptionKey);
   } catch (err) {
-    console.error('Encryption failed:', err);
-    return new Response(JSON.stringify({ error: 'Encryption failed' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('Encryption failed:', msg);
+    return json({ error: `Encryption failed: ${msg}` }, 500);
   }
 
   // ── 4. Store ciphertext ──────────────────────────────────
@@ -132,18 +150,9 @@ Deno.serve(async (req: Request) => {
 
   if (updateError) {
     console.error('Failed to update user_settings:', updateError);
-    return new Response(JSON.stringify({ error: 'Failed to save token' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return json({ error: 'Failed to save token', detail: updateError.message }, 500);
   }
 
   // ── 5. Return success (never echo the token) ─────────────
-  return new Response(JSON.stringify({ success: true }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    },
-  });
+  return json({ success: true });
 });

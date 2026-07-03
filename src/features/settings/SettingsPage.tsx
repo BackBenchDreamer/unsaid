@@ -89,7 +89,7 @@ export default function SettingsPage() {
           Your token is encrypted server-side and never returned to this device.
         </p>
 
-        {settings?.hasHFToken && !tokenSaved ? (
+        {settings?.aiConfigured && !tokenSaved ? (
           <div className="token-status token-configured">
             <span className="token-status-icon">✓</span>
             <span>Token configured</span>
@@ -150,7 +150,7 @@ export default function SettingsPage() {
         <div className="settings-model-info">
           <span className="settings-label">Model</span>
           <code className="settings-model-name">
-            {settings?.hfModel ?? 'j-hartmann/emotion-english-distilroberta-base'}
+            {settings?.aiModel ?? 'j-hartmann/emotion-english-distilroberta-base'}
           </code>
         </div>
       </section>

@@ -1,13 +1,25 @@
 /**
  * History Page — journal entries grouped by month, newspaper-column style.
+ *
+ * Read-only sentiment pills appear on entries that have been analysed.
+ * No Reflect button here — analysis is intentional and done from the editor.
  */
 
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { format, parseISO } from 'date-fns';
 import { useEntries } from './hooks';
+import { useInsights } from '../insights/hooks';
 import { formatShortDate } from '../../shared/utils/dates';
 import { MOOD_EMOJIS } from '../../shared/constants';
+import { isSentimentPayload } from '../../entities/insight';
+import type { EntryInsight } from '../../entities/insight';
+
+const SENTIMENT_EMOJI: Record<string, string> = {
+  positive: '😊',
+  neutral: '😐',
+  negative: '😔',
+};
 
 function groupByMonth(entries: Array<{ id: string; entryDate: string; content: string; mood: string | null; tags: string[] }>) {
   const groups = new Map<string, typeof entries>();
@@ -21,12 +33,22 @@ function groupByMonth(entries: Array<{ id: string; entryDate: string; content: s
 
 export default function HistoryPage() {
   const { data: entries, isLoading, error } = useEntries(200);
+  const { data: insights } = useInsights();
   const navigate = useNavigate();
 
   const grouped = useMemo(() => {
     if (!entries) return [];
     return groupByMonth(entries);
   }, [entries]);
+
+  // Build a map from entryId → EntryInsight for O(1) lookup per card
+  const insightByEntryId = useMemo(() => {
+    const m = new Map<string, EntryInsight>();
+    (insights ?? []).forEach((i) => {
+      if (i.entryId) m.set(i.entryId, i);
+    });
+    return m;
+  }, [insights]);
 
   if (isLoading) {
     return (
@@ -76,6 +98,13 @@ export default function HistoryPage() {
               const dayOfWeek = format(parsed, 'EEE');
               const shortDate = formatShortDate(entry.entryDate);
 
+              // Sentiment pill — read-only indicator for analysed entries
+              const insight = insightByEntryId.get(entry.id);
+              const sentiment =
+                insight && isSentimentPayload(insight.payload)
+                  ? insight.payload
+                  : null;
+
               return (
                 <button
                   key={entry.id}
@@ -100,6 +129,14 @@ export default function HistoryPage() {
                         {entry.tags.slice(0, 5).map((tag) => (
                           <span key={tag} className="tag tag-sm">{tag}</span>
                         ))}
+                      </div>
+                    )}
+                    {sentiment && (
+                      <div style={{ marginTop: '0.4rem' }}>
+                        <span className={`sentiment-pill sentiment-${sentiment.label}`} style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                          {SENTIMENT_EMOJI[sentiment.label]}{' '}
+                          {sentiment.label.charAt(0).toUpperCase() + sentiment.label.slice(1)}
+                        </span>
                       </div>
                     )}
                   </div>
