@@ -9,6 +9,7 @@
  * Stale-detection logic lives in src/features/insights/hooks.ts.
  */
 
+import { FunctionsHttpError } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import type { EntryInsight, SentimentResult, ReflectionResult } from '../entities/insight';
 import { ServiceError } from './errors';
@@ -119,21 +120,22 @@ export const insightsService = {
       body: { entryId },
     });
 
-    // supabase-js wraps non-2xx Edge Function responses as an `error` with the
-    // raw body in `error.message`.  We parse it to recover the structured code.
+    // supabase-js wraps non-2xx Edge Function responses in a FunctionsHttpError.
+    // error.message is always the generic "Edge Function returned a non-2xx status code".
+    // The actual JSON body lives in error.context (a Response object) — must be
+    // read with .json() (async). Falls back to error.message if parsing fails.
     if (error) {
-      // Attempt to extract the structured error body the Edge Function returned.
       let code = 'EDGE_FUNCTION_ERROR';
       let message = error.message;
 
-      try {
-        // The Supabase client surfaces the response body as error.message when
-        // the function returns a non-2xx status.
-        const parsed = JSON.parse(error.message) as EdgeFunctionErrorResponse;
-        if (parsed.code) code = parsed.code;
-        if (parsed.error) message = parsed.error;
-      } catch {
-        // body was not JSON — use raw message as-is
+      if (error instanceof FunctionsHttpError) {
+        try {
+          const body = await (error.context as Response).json() as EdgeFunctionErrorResponse;
+          if (body?.code) code = body.code;
+          if (body?.error) message = body.error;
+        } catch {
+          // context body already consumed or not JSON — use generic message
+        }
       }
 
       throw new ServiceError(message, code);
@@ -170,19 +172,24 @@ export const insightsService = {
       body: { entryId },
     });
 
+    // Same FunctionsHttpError pattern as generateInsight — error.message is the
+    // generic wrapper; actual structured body is in error.context (Response).
     if (error) {
       let code = 'EDGE_FUNCTION_ERROR';
       let message = error.message;
 
-      try {
-        const parsed = JSON.parse(error.message) as EdgeFunctionErrorResponse;
-        if (parsed.code) code = parsed.code;
-        if (parsed.error) message = parsed.error;
-      } catch {
-        // body was not JSON — use raw message as-is
+      if (error instanceof FunctionsHttpError) {
+        try {
+          const body = await (error.context as Response).json() as EdgeFunctionErrorResponse;
+          if (body?.code) code = body.code;
+          if (body?.error) message = body.error;
+        } catch {
+          // context body already consumed or not JSON — use generic message
+        }
       }
 
       // REFLECTION_NOT_CONFIGURED is an expected condition — not an error state.
+      // Groq token not set yet; caller silently falls back to analyze-sentiment.
       if (code === 'REFLECTION_NOT_CONFIGURED') {
         return { ok: false, code: 'REFLECTION_NOT_CONFIGURED' };
       }
