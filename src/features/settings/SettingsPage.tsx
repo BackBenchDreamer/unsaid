@@ -16,6 +16,10 @@ export default function SettingsPage() {
 
   const [tokenInput, setTokenInput] = useState('');
   const [tokenSaved, setTokenSaved] = useState(false);
+  // isReplacing: true while the user is actively replacing a previously saved token.
+  // Required because aiConfigured stays true (from the DB) until the new token is saved,
+  // so toggling tokenSaved alone is not enough to reveal the form.
+  const [isReplacing, setIsReplacing] = useState(false);
   const [tokenError, setTokenError] = useState('');
 
   const handleThemeToggle = (theme: 'dark' | 'light') => {
@@ -31,9 +35,23 @@ export default function SettingsPage() {
       await saveToken.mutateAsync(tokenInput.trim());
       setTokenInput('');
       setTokenSaved(true);
+      setIsReplacing(false);
     } catch (err) {
       setTokenError(err instanceof Error ? err.message : 'Failed to save token');
     }
+  };
+
+  const handleReplace = () => {
+    setIsReplacing(true);
+    setTokenSaved(false);
+    setTokenError('');
+    setTokenInput('');
+  };
+
+  const handleCancelReplace = () => {
+    setIsReplacing(false);
+    setTokenError('');
+    setTokenInput('');
   };
 
   if (isLoading) {
@@ -89,28 +107,31 @@ export default function SettingsPage() {
           Your token is encrypted server-side and never returned to this device.
         </p>
 
-        {settings?.aiConfigured && !tokenSaved ? (
+        {tokenSaved ? (
+          // Just saved — confirm state
+          <div className="token-status token-configured">
+            <span className="token-status-icon">✓</span>
+            <span>Token saved successfully</span>
+          </div>
+        ) : settings?.aiConfigured && !isReplacing ? (
+          // Token already on file and user hasn't clicked Replace yet
           <div className="token-status token-configured">
             <span className="token-status-icon">✓</span>
             <span>Token configured</span>
             <button
               className="btn-ghost btn-sm"
-              onClick={() => setTokenSaved(false)}
+              onClick={handleReplace}
               type="button"
             >
               Replace
             </button>
           </div>
-        ) : tokenSaved ? (
-          <div className="token-status token-configured">
-            <span className="token-status-icon">✓</span>
-            <span>Token saved successfully</span>
-          </div>
         ) : (
+          // No token saved yet, OR user clicked Replace
           <form className="settings-token-form" onSubmit={handleSaveToken}>
             <div className="form-group">
               <label htmlFor="hf-token" className="form-label">
-                HuggingFace Access Token
+                {isReplacing ? 'New HuggingFace Access Token' : 'HuggingFace Access Token'}
               </label>
               <input
                 id="hf-token"
@@ -121,6 +142,7 @@ export default function SettingsPage() {
                 placeholder="hf_••••••••••••••••••••••••••••••••••••"
                 autoComplete="off"
                 spellCheck={false}
+                autoFocus={isReplacing}
               />
               <p className="settings-hint">
                 Get a read token from{' '}
@@ -137,13 +159,24 @@ export default function SettingsPage() {
 
             {tokenError && <p className="form-error">{tokenError}</p>}
 
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={saveToken.isPending || !tokenInput.trim()}
-            >
-              {saveToken.isPending ? 'Saving…' : 'Save Token'}
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--space-sm)', alignItems: 'center' }}>
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={saveToken.isPending || !tokenInput.trim()}
+              >
+                {saveToken.isPending ? 'Saving…' : isReplacing ? 'Save New Token' : 'Save Token'}
+              </button>
+              {isReplacing && (
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  onClick={handleCancelReplace}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
           </form>
         )}
 

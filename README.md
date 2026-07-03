@@ -4,6 +4,8 @@
 
 UnSaid is an invite-only personal journaling app with offline-first sync, mood tracking, streaks, year-in-review heatmaps, and optional AI sentiment analysis via Hugging Face. Built with React 19, TypeScript, and Supabase.
 
+> **AI pipeline status (as of 2026-07-03):** fully operational and end-to-end verified. See [AI Insights](#ai-insights) for operational notes.
+
 ## Features
 
 - **Daily journal** — one entry per calendar day; distraction-free writing (Lexical editor) with autosave (1.5 s debounce) and offline queuing
@@ -12,7 +14,7 @@ UnSaid is an invite-only personal journaling app with offline-first sync, mood t
 - **Streaks** — current and longest consecutive-day streak, computed from local calendar dates
 - **Year heatmap** — mood-coloured GitHub-style activity grid via a Postgres RPC
 - **"On This Day" memories** — entries from the same day in past years
-- **AI Insights** — opt-in sentiment analysis via a Hugging Face model (stored in `insights` table)
+- **AI Insights** — opt-in sentiment analysis via a Hugging Face model (stored in `insights` table); explicit user action, never automatic
 - **Offline-first sync** — writes queue to IndexedDB and drain on reconnect; last-write-wins per day
 - **Invite-only access** — new signups land in a waitlist; an admin approves/rejects from the admin panel
 - **Settings** — per-user theme (dark/light) and HF token stored encrypted server-side
@@ -210,6 +212,123 @@ The `LexicalComposer` is not mounted until `editorSeedReady = true`, which is se
 
 The fix gates the `LexicalComposer` on `editorSeedReady`, so `InitPlugin` always receives the correct content on its first (and only) run.
 
+## AI Insights
+
+### How it works
+
+The Reflect button in the journal editor triggers the `analyze-sentiment` Edge Function:
+
+1. The Edge Function computes `source_hash = SHA-256(JSON.stringify({ content, promptVersion, model }))`.
+2. If an existing `insights` row has the same hash **and** passes structural validation (`confidence > 0`, score in `[-1,1]`, valid label) → return the cached result immediately (no HF call).
+3. Otherwise, decrypt the stored HF token and call the HuggingFace Inference router.
+4. Map the 7-emotion probability scores to `{ score, label, confidence }`.
+5. Write the validated result + `_meta` to the `insights` table and return to the client.
+
+### HuggingFace endpoint (important)
+
+```
+Current:  https://router.huggingface.co/hf-inference/models/<model>
+Retired:  https://api-inference.huggingface.co/models/<model>  ← DNS NXDOMAIN as of 2026
+```
+
+The `api-inference.huggingface.co` hostname no longer resolves. The Edge Function uses `router.huggingface.co/hf-inference/models/` exclusively. If you see `"dns error: failed to lookup address information"` in Edge Function logs, this is the cause.
+
+### Token setup
+
+1. Go to **Settings** in the app and click **Replace** (or enter your token if none is saved).
+2. Paste a [HuggingFace read token](https://huggingface.co/settings/tokens).
+3. Click **Save New Token** — the token is AES-256-GCM encrypted server-side immediately; the plaintext is never stored or returned.
+
+The **Replace** button uses `isReplacing` state (separate from `tokenSaved`) to show the form even when a token is already configured (`aiConfigured = true`). This is required because `aiConfigured` stays `true` from the DB until the new token is saved, so toggling `tokenSaved` alone is insufficient to reveal the form.
+
+### Response shape
+
+The HF Inference router returns `HFEmotionScore[][]` (nested) for single-string inputs. The Edge Function normalises both the nested form (router) and the legacy flat `HFEmotionScore[]` form for forward-compatibility.
+
+### End-to-end verification (2026-07-03)
+
+A full pipeline trace was performed confirming the following:
+
+| Stage | Result |
+|---|---|
+| Token saved via `encrypt-token` | ✅ AES-256-GCM ciphertext stored in `user_settings.hf_token_encrypted` |
+| `analyze-sentiment` invoked | ✅ POST `supabase.co/functions/v1/analyze-sentiment` → HTTP 200 |
+| Edge Function JWT validation | ✅ Supabase anon client validates Bearer token |
+| Entry ownership assert | ✅ `entry.user_id === user.id` check passes |
+| Token decryption | ✅ `decryptToken()` recovers plaintext token from ciphertext |
+| HF Inference call | ✅ `router.huggingface.co/hf-inference/models/j-hartmann/...` → HTTP 200 |
+| `cached: false` confirmed | ✅ `meta.generationMs ≈ 6 400–6 700 ms` (real inference, not cache hit) |
+| DB payload stored | ✅ `confidence > 0`, valid `label`, `_meta.provider = "huggingface"` |
+| UI rendering | ✅ `Math.round(confidence * 100)` displayed correctly |
+| Stale detection | ✅ "Journal updated since this insight." fires when saved content diverges |
+| Replace token button | ✅ `isReplacing` state shows form correctly; `Cancel` dismisses without saving |
+
+Sample stored payload from the verified run:
+
+```json
+{
+  "score": 0.4567,
+  "label": "positive",
+  "confidence": 0.6420,
+  "_meta": {
+    "provider": "huggingface",
+    "model": "j-hartmann/emotion-english-distilroberta-base",
+    "promptVersion": "1.0.0",
+    "generatedAt": "2026-07-03T13:36:24.967Z",
+    "generationMs": 6422
+  }
+}
+```
+
+### Stored payload schema
+
+```json
+{
+  "score": 0.48,
+  "label": "positive",
+  "confidence": 0.66,
+  "_meta": {
+    "provider": "huggingface",
+    "model": "j-hartmann/emotion-english-distilroberta-base",
+    "promptVersion": "1.0.0",
+    "generatedAt": "2026-07-03T13:28:37.429Z",
+    "generationMs": 4542
+  }
+}
+```
+
+`confidence` is the summed probability of the winning emotion category. It is always `> 0` for a real model output (HF softmax scores sum to 1). `confidence = 0` in a stored row is exclusively a bug artefact — see the migration below.
+
+### Error codes surfaced to the UI
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `MODEL_LOADING` | 503 | HF model cold-starting; retry in ~20 s |
+| `PROVIDER_ERROR` | 502 | HF returned a non-200 status |
+| `SHAPE_ERROR` | 502 | HF returned a 200 but an unrecognised payload shape |
+
+### Root cause of the historical 0% confidence bug
+
+The original `api-inference.huggingface.co` hostname became an NXDOMAIN (DNS resolution failure). The old code silently caught the network error and stored a fallback `{ confidence: 0, label: 'neutral' }` — which was then cached and served indefinitely. The fix:
+
+1. Updated the HF endpoint to `router.huggingface.co/hf-inference/models/<model>`.
+2. Removed all fallback/silent-failure paths from `generateSentiment()` — it only throws now.
+3. Added `isSentimentResult()` guard: a row with `confidence = 0` is treated as `CACHE_INVALID` and regenerated.
+4. Stale zero-confidence rows are cleaned up by migration `002_remove_invalid_cached_insights.sql`.
+
+### Cache integrity
+
+The cache-hit path validates the stored payload with `isSentimentResult()` before serving it. A row that fails validation (e.g. `confidence = 0` from a bug-era write) is treated as `CACHE_INVALID` — logged to Edge Function logs and regenerated. The database migration below cleans up any such rows.
+
+### Database migrations
+
+Run in order in the Supabase SQL Editor:
+
+| File | Purpose |
+|---|---|
+| `src/db/migrations/001_insights_source_hash.sql` | Add `source_hash` column + `UNIQUE(user_id, entry_id, type)` constraint |
+| `src/db/migrations/002_remove_invalid_cached_insights.sql` | Delete all `sentiment` rows with `confidence = 0` (bug-era rows that were never real inference results) |
+
 ## Key Invariants
 
 - **`entry_date` is always a user-local `"YYYY-MM-DD"` string** — never derived from `toISOString()` (UTC). Use `getTodayLocal()` from `src/shared/utils/dates.ts`.
@@ -218,3 +337,4 @@ The fix gates the `LexicalComposer` on `editorSeedReady`, so `InitPlugin` always
 - **All writes go through `syncEngine.enqueueEntry()`** — not direct service calls.
 - **`insights` has no client INSERT policy** — only Edge Functions (service role) can write insights.
 - **`LexicalComposer` only mounts after `editorSeedReady = true`** — never with stale/empty `initialContent`.
+- **Edge Functions must be redeployed after code changes** — `supabase functions deploy <name>`. The deployed version is independent of local source code; check with `supabase functions list`.
