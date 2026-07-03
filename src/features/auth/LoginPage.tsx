@@ -13,6 +13,7 @@
  */
 
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../app/providers/AuthProvider';
 import { APP_NAME, APP_TAGLINE } from '../../shared/constants';
 
@@ -90,11 +91,17 @@ type FlowState = 'idle' | 'confirming' | 'sent';
 
 export default function LoginPage() {
   const { signInWithOtp, isAuthenticated } = useAuth();
+  const [searchParams] = useSearchParams();
 
   const [email, setEmail] = useState('');
   const [flow, setFlow] = useState<FlowState>('idle');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  // Pre-populate error from ?error= query param (e.g. link_expired from /auth/callback)
+  const [error, setError] = useState<string>(() => {
+    const e = searchParams.get('error');
+    if (e === 'link_expired') return 'That link has expired or already been used. Request a new one.';
+    return '';
+  });
 
   // Already authenticated (e.g. navigated to /login while logged in) — render nothing,
   // the router will redirect away via the auth state.

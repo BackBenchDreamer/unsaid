@@ -10,6 +10,7 @@ import { AppLayout } from './layout/AppLayout';
 // Lazy-loaded feature pages.
 const LoginPage = lazy(() => import('../features/auth/LoginPage'));
 const WaitlistPage = lazy(() => import('../features/auth/WaitlistPage'));
+const AuthCallbackPage = lazy(() => import('../features/auth/AuthCallbackPage'));
 const JournalPage = lazy(() => import('../features/journal/JournalPage'));
 const DashboardPage = lazy(() => import('../features/dashboard/DashboardPage'));
 const HistoryPage = lazy(() => import('../features/journal/HistoryPage'));
@@ -59,6 +60,7 @@ export function AppRouter() {
           {/* Public routes */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/waitlist" element={<WaitlistPage />} />
+          <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
           {/* Protected routes */}
           <Route element={<AppLayout />}>

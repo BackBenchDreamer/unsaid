@@ -20,9 +20,16 @@ export const authService = {
    * Sign in with magic link (OTP via email).
    */
   async signInWithOtp(email: string): Promise<void> {
+    // emailRedirectTo must point to /auth/callback so the PKCE code= param
+    // is handled by AuthCallbackPage.exchangeCodeForSession() instead of
+    // being silently dropped on the root route.
+    const redirectTo = `${window.location.origin}/auth/callback`;
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { shouldCreateUser: true },
+      options: {
+        shouldCreateUser: true,
+        emailRedirectTo: redirectTo,
+      },
     });
     if (error) throw new AuthError(error.message, error);
   },
