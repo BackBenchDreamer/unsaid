@@ -12,7 +12,7 @@ import { useEntries } from './hooks';
 import { useInsights } from '../insights/hooks';
 import { formatShortDate } from '../../shared/utils/dates';
 import { MOOD_EMOJIS } from '../../shared/constants';
-import { isSentimentPayload } from '../../entities/insight';
+import { isSentimentPayload, isReflectionPayload } from '../../entities/insight';
 import type { EntryInsight } from '../../entities/insight';
 
 const SENTIMENT_EMOJI: Record<string, string> = {
@@ -41,12 +41,22 @@ export default function HistoryPage() {
     return groupByMonth(entries);
   }, [entries]);
 
-  // Build a map from entryId → EntryInsight for O(1) lookup per card
+  // Build a map from entryId → best EntryInsight for O(1) lookup per card.
+  // insights is sorted createdAt DESC. We prefer reflection over sentiment:
+  // if a reflection row exists for an entry, never replace it with sentiment.
   const insightByEntryId = useMemo(() => {
     const m = new Map<string, EntryInsight>();
-    (insights ?? []).forEach((i) => {
-      if (i.entryId) m.set(i.entryId, i);
-    });
+    for (const i of (insights ?? [])) {
+      if (!i.entryId) continue;
+      const existing = m.get(i.entryId);
+      if (!existing) {
+        m.set(i.entryId, i);
+      } else if (existing.type !== 'reflection' && i.type === 'reflection') {
+        // Upgrade: a newer reflection supersedes the stored sentiment
+        m.set(i.entryId, i);
+      }
+      // A stored reflection is never downgraded to sentiment
+    }
     return m;
   }, [insights]);
 
@@ -98,12 +108,21 @@ export default function HistoryPage() {
               const dayOfWeek = format(parsed, 'EEE');
               const shortDate = formatShortDate(entry.entryDate);
 
-              // Sentiment pill — read-only indicator for analysed entries
+              // Read-only AI indicator for analysed entries.
+              // Prefer reflection (rich) over legacy sentiment (label-only).
               const insight = insightByEntryId.get(entry.id);
               const sentiment =
                 insight && isSentimentPayload(insight.payload)
                   ? insight.payload
                   : null;
+              const reflection =
+                insight && isReflectionPayload(insight.payload)
+                  ? insight.payload
+                  : null;
+              // Top emotion from reflection for display (highest score)
+              const topEmotion = reflection
+                ? [...reflection.emotions].sort((a, b) => b.score - a.score)[0]
+                : null;
 
               return (
                 <button
@@ -131,7 +150,18 @@ export default function HistoryPage() {
                         ))}
                       </div>
                     )}
-                    {sentiment && (
+                    {/* Reflection insight: show top emotion pill */}
+                    {topEmotion && (
+                      <div style={{ marginTop: '0.4rem' }}>
+                        <span className="history-reflection-badge">
+                          ✦{' '}
+                          {topEmotion.label.charAt(0).toUpperCase() +
+                            topEmotion.label.slice(1).toLowerCase()}
+                        </span>
+                      </div>
+                    )}
+                    {/* Legacy sentiment pill (HF-only users) */}
+                    {!topEmotion && sentiment && (
                       <div style={{ marginTop: '0.4rem' }}>
                         <span className={`sentiment-pill sentiment-${sentiment.label}`} style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
                           {SENTIMENT_EMOJI[sentiment.label]}{' '}

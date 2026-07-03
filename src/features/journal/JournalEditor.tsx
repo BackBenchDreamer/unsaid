@@ -521,14 +521,19 @@ export function JournalEditor({ date }: JournalEditorProps) {
                       </div>
                       <p className="reflection-summary">{reflectionData.summary}</p>
                       <div className="reflection-emotions">
-                        {reflectionData.emotions.map((e) => (
-                          <span
-                            key={e.label}
-                            className={`reflection-emotion-pill ${getEmotionValence(e.label)}`}
-                          >
-                            ● {e.label} {Math.round(e.score * 100)}%
-                          </span>
-                        ))}
+                        {reflectionData.emotions.map((e) => {
+                            const label =
+                              e.label.charAt(0).toUpperCase() +
+                              e.label.slice(1).toLowerCase();
+                            return (
+                              <span
+                                key={e.label}
+                                className={`reflection-emotion-pill ${getEmotionValence(e.label)}`}
+                              >
+                                ● {label} {Math.round(e.score * 100)}%
+                              </span>
+                            );
+                          })}
                       </div>
                       {reflectionData.themes.length > 0 && (
                         <p className="reflection-themes">
@@ -536,19 +541,23 @@ export function JournalEditor({ date }: JournalEditorProps) {
                         </p>
                       )}
                       <div className="reflection-divider" />
-                      <p
-                        className="reflection-question"
-                        onClick={() => appendQuestionToEditor(reflectionData.question)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            appendQuestionToEditor(reflectionData.question);
-                          }
-                        }}
-                        role="button"
-                        tabIndex={0}
-                      >
-                        {reflectionData.question}
-                      </p>
+                      <div className="reflection-question-wrapper">
+                        <p
+                          className="reflection-question"
+                          onClick={() => appendQuestionToEditor(reflectionData.question)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              appendQuestionToEditor(reflectionData.question);
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          title="Tap to add this question to your entry"
+                        >
+                          {reflectionData.question}
+                        </p>
+                        <span className="reflection-question-hint">↵ Add to entry</span>
+                      </div>
                     </div>
                   ) : sentimentData ? (
                     /* ── State 5 fallback: legacy sentiment pill ── */

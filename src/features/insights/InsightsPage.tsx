@@ -95,14 +95,19 @@ function InsightCard({ insight, entryDate }: InsightCardProps) {
               marginBottom: '0.3rem',
             }}
           >
-            {topTwo.map((e) => (
-              <span
-                key={e.label}
-                className={`reflection-emotion-pill ${getEmotionValence(e.label)}`}
-              >
-                {e.label}
-              </span>
-            ))}
+            {topTwo.map((e) => {
+              const label =
+                e.label.charAt(0).toUpperCase() +
+                e.label.slice(1).toLowerCase();
+              return (
+                <span
+                  key={e.label}
+                  className={`reflection-emotion-pill ${getEmotionValence(e.label)}`}
+                >
+                  {label}
+                </span>
+              );
+            })}
           </div>
           <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)' }}>
             {formatReflectedAt(insight.createdAt)}
@@ -204,12 +209,33 @@ export default function InsightsPage() {
     );
   }
 
-  // Collect all displayable insights (reflection + sentiment), sorted by createdAt desc
-  const allInsights = (insights ?? []).filter(
-    (i) =>
-      (i.type === 'reflection' && isReflectionPayload(i.payload)) ||
-      (i.type === 'sentiment' && isSentimentPayload(i.payload)),
-  );
+  // Collect all displayable insights, deduplicating by entryId.
+  // When both a reflection and a sentiment row exist for the same entry
+  // (user reflected with HF-only first, then with Groq later), prefer
+  // the reflection insight so only one card renders per entry.
+  const allInsights = (() => {
+    const byEntry = new Map<string | null, EntryInsight>();
+    // insights is already sorted createdAt DESC; iterate to build a
+    // per-entry best-insight map — reflection always beats sentiment.
+    for (const i of (insights ?? [])) {
+      const isReflection = i.type === 'reflection' && isReflectionPayload(i.payload);
+      const isSentiment = i.type === 'sentiment' && isSentimentPayload(i.payload);
+      if (!isReflection && !isSentiment) continue;
+
+      const key = i.entryId; // null for user-level insights
+      const existing = byEntry.get(key);
+      if (!existing) {
+        byEntry.set(key, i);
+      } else if (existing.type !== 'reflection' && isReflection) {
+        // Upgrade: replace a sentiment entry with a reflection entry
+        byEntry.set(key, i);
+      }
+      // existing reflection is never downgraded to sentiment
+    }
+    return Array.from(byEntry.values()).sort(
+      (a, b) => b.createdAt.localeCompare(a.createdAt),
+    );
+  })();
 
   // Legacy sentinel insights only — for the empty state check
   const sentimentInsights = (insights ?? []).filter(
@@ -325,7 +351,7 @@ export default function InsightsPage() {
       <p className="page-subtitle">Emotional patterns from your writing.</p>
 
       {/* ── Mood distribution bar ─────────────────────── */}
-      <section style={{ marginBottom: 'var(--space-2xl)' }}>
+      <section style={{ marginTop: 'var(--space-xl)', marginBottom: 'var(--space-2xl)' }}>
         <h2
           style={{
             fontSize: '0.82rem',

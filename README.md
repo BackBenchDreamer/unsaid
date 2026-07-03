@@ -6,6 +6,8 @@ UnSaid is an invite-only personal journaling app with offline-first sync, mood t
 
 > **AI pipeline status (as of 2026-07-03):** fully operational and end-to-end verified. See [AI Insights](#ai-insights) for operational notes.
 
+> **Milestone 1 release candidate (2026-07-03):** All review fixes applied — see [Changelog](#changelog).
+
 ## Features
 
 - **Daily journal** — one entry per calendar day; distraction-free writing (Lexical editor) with autosave (1.5 s debounce) and offline queuing
@@ -432,3 +434,42 @@ After running migration 004, if settings still fail to load, reload the PostgRES
 - **`insights` has no client INSERT policy** — only Edge Functions (service role) can write insights.
 - **`LexicalComposer` only mounts after `editorSeedReady = true`** — never with stale/empty `initialContent`.
 - **Edge Functions must be redeployed after code changes** — `supabase functions deploy <name>`. The deployed version is independent of local source code; check with `supabase functions list`.
+
+## Mobile
+
+UnSaid is designed for equal first-class use on desktop and mobile. Journaling happens on the couch, during commutes, and just before bed — not only at a desk.
+
+Every milestone should include a mobile pass before it is considered complete.
+
+**Supported viewport range:** 390–1440px. Breakpoint: ≤ 680px activates the mobile layout.
+
+**Mobile-specific behaviours:**
+- Mood picker: 5-column CSS grid (all buttons in one row, no wrapping).
+- Minimum touch target on mood buttons: 56 × 44 px.
+- Reflect / Re-reflect button: full-width on mobile for easier tap.
+- Reflection question hint (`↵ Add to entry`): hidden on mobile (redundant with `title` tooltip on tap).
+- Insight cards: stack vertically on mobile (text above, "Open entry" button below).
+- Journal textarea: shorter minimum height on mobile (240 px vs 360 px) to avoid excessive empty space.
+
+## Changelog
+
+### Milestone 1 release candidate polish (2026-07-03)
+
+**Bug fixes:**
+- **InsightsPage:** deduplicate insight cards by entry — when both a reflection and a legacy sentiment row exist for the same entry, only the reflection card is shown. Previously both appeared simultaneously.
+- **HistoryPage:** the `entryId → insight` map now correctly prefers reflection over sentiment. Previously an older sentiment row could overwrite a newer reflection due to last-write-wins iteration.
+
+**UX improvements:**
+- Emotion pills normalised to Title-Case (`Joy`, `Sadness`) in both the reflection card and the Insights dashboard. Previously all-caps from the model were rendered as-is.
+- Reflection question now shows an `↵ Add to entry` affordance hint on desktop so users know it is tappable.
+- Reflection question has a `:focus-visible` outline ring for keyboard navigation.
+- HistoryPage cards now show a `✦ [top emotion]` accent badge for reflected entries instead of nothing (previously only sentiment entries showed a pill; reflection entries showed no indicator).
+- InsightsPage subtitle now has breathing room above the Mood Overview section heading.
+- Insight cards use `align-items: flex-start` so the "Open entry →" button stays top-aligned with multi-line content.
+
+**Mobile (≤ 680 px):**
+- Mood picker fixed to a 5-column CSS grid — the "GREAT" button no longer wraps to a second row.
+- Mood buttons have a minimum touch target height (56 px on mobile).
+- Reflect / Re-reflect button is full-width on mobile.
+- Insight cards stack vertically on mobile for readability.
+- Journal textarea minimum height reduced from 420 px to 240 px on mobile.
