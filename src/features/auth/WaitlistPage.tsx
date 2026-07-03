@@ -3,11 +3,18 @@
  * Warm, personal copy with a subtle pulse animation.
  */
 
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../app/providers/AuthProvider';
 import { APP_NAME } from '../../shared/constants';
 
 export default function WaitlistPage() {
   const { user, signOut } = useAuth();
+  const navigate = useNavigate();
+
+  const handleSignOut = async () => {
+    await signOut();
+    navigate('/login', { replace: true });
+  };
 
   return (
     <div className="auth-page">
@@ -30,7 +37,7 @@ export default function WaitlistPage() {
           </p>
         </div>
 
-        <button className="btn-ghost" onClick={signOut} type="button">
+        <button className="btn-ghost" onClick={handleSignOut} type="button">
           Sign out
         </button>
       </div>

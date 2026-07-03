@@ -2,6 +2,8 @@
 -- UnSaid — Supabase Schema
 -- ============================================================
 -- Run this against a fresh Supabase project (or as a migration).
+-- After running this file, run rls.sql, then user_settings.sql,
+-- then user_settings_rls.sql (in that order).
 -- ============================================================
 
 -- ─── Enable required extensions ────────────────────────────
@@ -9,7 +11,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ─── Profiles ──────────────────────────────────────────────
 -- Mirrors auth.users, extended with app-specific fields.
--- Populated via trigger on auth.users insert.
+-- Provisioned on first verified sign-in (email_confirmed_at trigger),
+-- never on OTP request, to avoid phantom rows from typo emails.
 CREATE TABLE IF NOT EXISTS public.profiles (
   id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email       TEXT NOT NULL,
@@ -85,29 +88,80 @@ CREATE TRIGGER trg_entries_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION public.set_updated_at();
 
--- ─── Auto-create profile on signup ─────────────────────────
+-- ─── Profile provisioning — first verified sign-in only ────
+--
+-- The trigger fires on UPDATE (not INSERT) of auth.users, guarded by the
+-- email_confirmed_at transition NULL → non-null.  This ensures profiles are
+-- created only after the user clicks their magic link, never on the bare
+-- OTP request.  Both inserts use ON CONFLICT DO NOTHING so the function is
+-- fully idempotent (safe to replay on subsequent sign-ins or retries).
+--
+-- Drop the old INSERT trigger if it exists from a previous schema version.
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-  INSERT INTO public.profiles (id, email)
-  VALUES (NEW.id, NEW.email);
+  -- Guard: only run when email_confirmed_at transitions NULL → set.
+  -- This fires exactly once per user (on their first verified sign-in).
+  IF (OLD.email_confirmed_at IS NULL AND NEW.email_confirmed_at IS NOT NULL) THEN
+    INSERT INTO public.profiles (id, email)
+    VALUES (NEW.id, NEW.email)
+    ON CONFLICT (id) DO NOTHING;
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Only create if it doesn't exist (idempotent-ish for migrations).
-DO $$
+-- Idempotent trigger creation: drop-and-recreate is the cleanest pattern
+-- for UPDATE triggers (IF NOT EXISTS only works for CREATE TRIGGER on PG 14+
+-- and is not yet available in all Supabase runtime versions).
+DROP TRIGGER IF EXISTS on_auth_user_verified ON auth.users;
+
+CREATE TRIGGER on_auth_user_verified
+  AFTER UPDATE ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_new_user();
+
+-- ─── RPC: ensure_profile ────────────────────────────────────
+--
+-- Application-level resilience fallback.  Called by the client after every
+-- successful sign-in to guarantee the profile and user_settings rows exist,
+-- even if the trigger was somehow missed (e.g. during a Supabase maintenance
+-- window, or for users who signed up before this migration was applied).
+--
+-- The function uses SECURITY DEFINER so it can write to both tables without
+-- requiring the calling user to have INSERT rights (which RLS forbids).
+-- It is intentionally a no-op when the rows already exist.
+
+CREATE OR REPLACE FUNCTION public.ensure_profile()
+RETURNS void AS $$
+DECLARE
+  v_user_id   UUID;
+  v_email     TEXT;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_trigger WHERE tgname = 'on_auth_user_created'
-  ) THEN
-    CREATE TRIGGER on_auth_user_created
-      AFTER INSERT ON auth.users
-      FOR EACH ROW
-      EXECUTE FUNCTION public.handle_new_user();
+  -- Resolve the calling user from the JWT; aborts if not authenticated.
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
   END IF;
+
+  -- Look up the email from auth.users (requires SECURITY DEFINER).
+  SELECT email INTO v_email
+  FROM auth.users
+  WHERE id = v_user_id;
+
+  -- Upsert profile — no-op if it already exists.
+  INSERT INTO public.profiles (id, email)
+  VALUES (v_user_id, v_email)
+  ON CONFLICT (id) DO NOTHING;
+
+  -- Upsert user_settings — no-op if it already exists.
+  INSERT INTO public.user_settings (user_id)
+  VALUES (v_user_id)
+  ON CONFLICT (user_id) DO NOTHING;
 END;
-$$;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ─── RPC: Heatmap data ────────────────────────────────────
 CREATE OR REPLACE FUNCTION public.get_heatmap(

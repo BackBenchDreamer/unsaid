@@ -1,11 +1,68 @@
 /**
  * Login Page — magic link sign-in.
- * Minimal, typographic. Large serif logo, generous spacing.
+ *
+ * Three-state flow: idle → confirming → sent
+ *
+ *  idle       — email form; client-side typo validation runs on submit
+ *  confirming — shows the entered email for explicit confirmation before
+ *               any Supabase call (and thus any auth.users row) is made
+ *  sent       — magic link dispatched; user told to check inbox
+ *
+ * Typo validation catches common domain misspellings and TLD errors so
+ * phantom auth.users rows are blocked before they reach the network.
  */
 
 import React, { useState } from 'react';
 import { useAuth } from '../../app/providers/AuthProvider';
 import { APP_NAME, APP_TAGLINE } from '../../shared/constants';
+
+// ─── Typo detection ────────────────────────────────────────────────────────
+
+/** TLD suffixes that are almost never real — usually a mis-key of .com/.net */
+const SUSPICIOUS_TLDS = new Set([
+  '.con', '.ocm', '.cmo', '.cpm', '.nte', '.rog', '.ogr', '.vom', '.cok',
+]);
+
+/** Common provider domains that are frequently mis-typed */
+const MISTYPED_DOMAINS = new Set([
+  'gamil.com', 'gmai.com', 'gmial.com', 'gmal.com', 'gmali.com',
+  'yaho.com', 'yahooo.com', 'yhoo.com',
+  'hotmial.com', 'hotmal.com', 'homail.com', 'hotmaill.com',
+  'outlok.com', 'outloo.com', 'outlookk.com',
+]);
+
+/**
+ * Returns a human-readable error string if the email looks like a typo,
+ * or null if it passes all checks.
+ */
+function validateEmail(email: string): string | null {
+  const lower = email.toLowerCase().trim();
+
+  // Must contain exactly one @
+  const atIdx = lower.lastIndexOf('@');
+  if (atIdx < 1) return 'Please enter a valid email address.';
+
+  const domain = lower.slice(atIdx + 1);
+  if (!domain || !domain.includes('.')) return 'Please enter a valid email address.';
+
+  // Check full domain against known mistyped providers
+  if (MISTYPED_DOMAINS.has(domain)) {
+    return `"${domain}" looks like a typo — did you mean a different domain?`;
+  }
+
+  // Check TLD against suspicious suffixes
+  const dotIdx = domain.lastIndexOf('.');
+  if (dotIdx !== -1) {
+    const tld = domain.slice(dotIdx); // e.g. ".con"
+    if (SUSPICIOUS_TLDS.has(tld)) {
+      return `The domain ends in "${tld}" — is that correct? Common fix: "${tld.replace(/[co]{2,}$/, 'com')}"`;
+    }
+  }
+
+  return null;
+}
+
+// ─── Icons ─────────────────────────────────────────────────────────────────
 
 function MailIcon() {
   return (
@@ -27,38 +84,75 @@ function MailIcon() {
   );
 }
 
+// ─── Component ─────────────────────────────────────────────────────────────
+
+type FlowState = 'idle' | 'confirming' | 'sent';
+
 export default function LoginPage() {
   const { signInWithOtp, isAuthenticated } = useAuth();
+
   const [email, setEmail] = useState('');
+  const [flow, setFlow] = useState<FlowState>('idle');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
 
+  // Already authenticated (e.g. navigated to /login while logged in) — render nothing,
+  // the router will redirect away via the auth state.
   if (isAuthenticated) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // ── idle: validate then advance to confirming ──────────────────────────
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
+
+    const typoError = validateEmail(email);
+    if (typoError) {
+      setError(typoError);
+      return;
+    }
+
+    setFlow('confirming');
+  };
+
+  // ── confirming: send the magic link ───────────────────────────────────
+  const handleConfirm = async () => {
     setError('');
     setIsSubmitting(true);
     try {
       await signInWithOtp(email);
-      setSent(true);
+      setFlow('sent');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send magic link');
+      setFlow('idle'); // drop back to form so user can retry
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const handleEdit = () => {
+    setFlow('idle');
+    setError('');
+    // email value preserved so the user can correct it in-place
+  };
+
+  // ── sent: try a different email ────────────────────────────────────────
+  const handleReset = () => {
+    setFlow('idle');
+    setEmail('');
+    setError('');
+  };
+
   return (
     <div className="auth-page">
       <div className="auth-container">
+
         <div className="auth-brand">
           <h1 className="auth-logo">{APP_NAME}</h1>
           <p className="auth-tagline">{APP_TAGLINE}</p>
         </div>
 
-        {sent ? (
+        {/* ── sent ─────────────────────────────────────────────────── */}
+        {flow === 'sent' && (
           <div className="auth-message">
             <div className="auth-icon-wrap">
               <MailIcon />
@@ -68,14 +162,52 @@ export default function LoginPage() {
               We sent a magic link to <strong>{email}</strong>.
               Click it to sign in — no password needed.
             </p>
-            <button
-              className="btn-ghost"
-              onClick={() => { setSent(false); setEmail(''); }}
-            >
+            <button className="btn-ghost" onClick={handleReset} type="button">
               Use a different email
             </button>
           </div>
-        ) : (
+        )}
+
+        {/* ── confirming ───────────────────────────────────────────── */}
+        {flow === 'confirming' && (
+          <div className="auth-message">
+            <div className="auth-icon-wrap">
+              <MailIcon />
+            </div>
+            <h2>Confirm your email</h2>
+            <p>
+              We'll send a magic link to:
+            </p>
+            <p style={{ fontWeight: 600, wordBreak: 'break-all', margin: '0.25rem 0 1rem' }}>
+              {email}
+            </p>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+              Make sure that's correct — the link only works for this address.
+            </p>
+            {error && <p className="form-error">{error}</p>}
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+              <button
+                className="btn-primary"
+                onClick={handleConfirm}
+                disabled={isSubmitting}
+                type="button"
+              >
+                {isSubmitting ? 'Sending…' : 'Yes, send the link'}
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={handleEdit}
+                disabled={isSubmitting}
+                type="button"
+              >
+                Edit email
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── idle ─────────────────────────────────────────────────── */}
+        {flow === 'idle' && (
           <form className="auth-form" onSubmit={handleSubmit}>
             <div className="form-group">
               <label htmlFor="email" className="form-label">
@@ -86,7 +218,7 @@ export default function LoginPage() {
                 type="email"
                 className="form-input"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => { setEmail(e.target.value); setError(''); }}
                 placeholder="you@example.com"
                 required
                 autoFocus
@@ -100,9 +232,9 @@ export default function LoginPage() {
             <button
               type="submit"
               className="btn-primary btn-full"
-              disabled={isSubmitting || !email}
+              disabled={isSubmitting || !email.trim()}
             >
-              {isSubmitting ? 'Sending…' : 'Send magic link'}
+              Send magic link
             </button>
           </form>
         )}
@@ -110,6 +242,7 @@ export default function LoginPage() {
         <p className="auth-footer">
           This is an invite-only journal. New accounts are reviewed before access is granted.
         </p>
+
       </div>
     </div>
   );

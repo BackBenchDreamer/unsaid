@@ -1,6 +1,6 @@
 -- ============================================================
 -- UnSaid — user_settings table migration
--- Run AFTER schema.sql in the Supabase SQL Editor.
+-- Run AFTER schema.sql AND rls.sql in the Supabase SQL Editor.
 -- ============================================================
 
 -- ─── User Settings ──────────────────────────────────────────
@@ -24,18 +24,24 @@ CREATE TRIGGER trg_user_settings_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 -- ─── Extend handle_new_user to also create a settings row ───
--- Replace the existing function so new sign-ups get a settings
--- row automatically. The INSERT into user_settings uses the same
--- SECURITY DEFINER context so no RLS policy is needed for INSERT.
+-- Replaces the function defined in schema.sql.  Keeps the same
+-- email_confirmed_at guard so both rows are provisioned atomically
+-- on the first verified sign-in only.  ON CONFLICT DO NOTHING on
+-- both inserts keeps the function idempotent.
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-  INSERT INTO public.profiles (id, email)
-  VALUES (NEW.id, NEW.email);
+  -- Guard: only run when email_confirmed_at transitions NULL → set.
+  IF (OLD.email_confirmed_at IS NULL AND NEW.email_confirmed_at IS NOT NULL) THEN
+    INSERT INTO public.profiles (id, email)
+    VALUES (NEW.id, NEW.email)
+    ON CONFLICT (id) DO NOTHING;
 
-  INSERT INTO public.user_settings (user_id)
-  VALUES (NEW.id);
+    INSERT INTO public.user_settings (user_id)
+    VALUES (NEW.id)
+    ON CONFLICT (user_id) DO NOTHING;
+  END IF;
 
   RETURN NEW;
 END;

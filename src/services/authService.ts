@@ -55,11 +55,22 @@ export const authService = {
 
   /**
    * Get the app-level profile for the current user.
-   * This is the source of truth for role and status.
+   *
+   * Calls the ensure_profile RPC first so that the profile and user_settings
+   * rows are guaranteed to exist even if the UPDATE trigger was missed (e.g.
+   * Supabase maintenance, pre-migration sign-ups).  The RPC is a no-op when
+   * both rows already exist, so this is always safe to call on sign-in.
    */
   async getProfile(): Promise<AppUser | null> {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
+
+    // Best-effort ensure: provision profile+settings rows if missing.
+    // Failure is non-fatal — profile fetch below will still reflect reality.
+    await supabase.rpc('ensure_profile').then(
+      () => {},
+      () => {}, // silently ignore — fallback, not critical path
+    );
 
     const result = await supabase
       .from('profiles')
@@ -68,7 +79,7 @@ export const authService = {
       .single();
 
     if (result.error && result.error.code === 'PGRST116') {
-      // Profile doesn't exist yet (race with trigger).
+      // Profile still doesn't exist (e.g. unverified user with no confirmed email).
       return null;
     }
 
