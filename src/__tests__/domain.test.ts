@@ -4,7 +4,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { computeStreak } from '../entities/streak';
-import { validateEntryPayload, isValidEntryDate, EntryUpsertPayload } from '../entities/entry';
+import { validateEntryPayload, isValidEntryDate } from '../entities/entry';
+import type { EntryUpsertPayload } from '../entities/entry';
 
 describe('computeStreak', () => {
   it('returns zero for no entries', () => {
@@ -98,7 +99,8 @@ describe('validateEntryPayload', () => {
   });
 
   it('rejects invalid mood', () => {
-    const errors = validateEntryPayload({ ...validPayload, mood: 'invalid' as any });
+    // Cast through unknown to simulate a runtime value with a wrong type
+    const errors = validateEntryPayload({ ...validPayload, mood: 'invalid' as unknown as import('../entities/entry').Mood });
     expect(errors).toContain('Invalid mood value.');
   });
 });

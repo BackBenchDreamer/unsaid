@@ -2,7 +2,7 @@
  * Tests for the sync queue.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { makeMutationId } from '../sync/queue';
 
 describe('makeMutationId', () => {

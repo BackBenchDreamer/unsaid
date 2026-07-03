@@ -14,12 +14,13 @@ const JournalPage = lazy(() => import('../features/journal/JournalPage'));
 const DashboardPage = lazy(() => import('../features/dashboard/DashboardPage'));
 const HistoryPage = lazy(() => import('../features/journal/HistoryPage'));
 const AdminPage = lazy(() => import('../features/admin/AdminPage'));
+const InsightsPage = lazy(() => import('../features/insights/InsightsPage'));
+const SettingsPage = lazy(() => import('../features/settings/SettingsPage'));
 
 function LoadingFallback() {
   return (
     <div className="loading-screen">
       <div className="loading-spinner" />
-      <p>Loading...</p>
     </div>
   );
 }
@@ -90,6 +91,22 @@ export function AppRouter() {
               element={
                 <ProtectedRoute>
                   <HistoryPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/insights"
+              element={
+                <ProtectedRoute>
+                  <InsightsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>
+                  <SettingsPage />
                 </ProtectedRoute>
               }
             />

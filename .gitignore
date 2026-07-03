@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Bob workspace files — local tooling only
+.bob/
+AGENTS.md

@@ -3,14 +3,21 @@
  */
 
 export class ServiceError extends Error {
+  readonly code: string;
+  readonly status?: number;
+  readonly details?: unknown;
+
   constructor(
     message: string,
-    public readonly code: string,
-    public readonly status?: number,
-    public readonly details?: unknown,
+    code: string,
+    status?: number,
+    details?: unknown,
   ) {
     super(message);
     this.name = 'ServiceError';
+    this.code = code;
+    this.status = status;
+    this.details = details;
   }
 }
 

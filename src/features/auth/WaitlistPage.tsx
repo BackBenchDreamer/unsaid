@@ -1,8 +1,8 @@
 /**
  * Waitlist Page — shown to users with 'pending' status.
+ * Warm, personal copy with a subtle pulse animation.
  */
 
-import React from 'react';
 import { useAuth } from '../../app/providers/AuthProvider';
 import { APP_NAME } from '../../shared/constants';
 
@@ -17,18 +17,20 @@ export default function WaitlistPage() {
         </div>
 
         <div className="auth-message">
-          <div className="auth-icon">⏳</div>
-          <h2>You're on the waitlist</h2>
+          <div className="auth-icon-wrap auth-icon-pulse" style={{ fontSize: '1.5rem' }}>
+            ⏳
+          </div>
+          <h2>You're on the list</h2>
           <p>
-            Thanks for signing up, <strong>{user?.email}</strong>.
-            Your account is being reviewed. We'll let you know when you're in.
+            Thanks for signing up{user?.email ? `, ${user.email}` : ''}.
+            This is a small, intentional space — we'll let you know once your account is ready.
           </p>
           <p className="auth-subtle">
-            This is an invite-only space to keep things intimate and meaningful.
+            Sit with your thoughts in the meantime.
           </p>
         </div>
 
-        <button className="btn-ghost" onClick={signOut}>
+        <button className="btn-ghost" onClick={signOut} type="button">
           Sign out
         </button>
       </div>

@@ -7,7 +7,7 @@
  */
 
 import { supabase } from './supabaseClient';
-import { SentimentResult } from '../entities/insight';
+import type { SentimentResult } from '../entities/insight';
 import { ServiceError } from './errors';
 
 export const insightsService = {

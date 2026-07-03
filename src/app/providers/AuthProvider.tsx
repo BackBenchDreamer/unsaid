@@ -5,10 +5,10 @@
  * It reads from the service layer, never from Supabase directly.
  */
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { Session } from '@supabase/supabase-js';
+import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { authService } from '../../services/authService';
-import { AppUser } from '../../entities/user';
+import type { AppUser } from '../../entities/user';
 
 interface AuthContextValue {
   session: Session | null;
@@ -89,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- provider pattern: hook must live alongside its context
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');

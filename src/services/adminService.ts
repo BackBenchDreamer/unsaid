@@ -6,7 +6,8 @@
  */
 
 import { supabase } from './supabaseClient';
-import { AppUser, userFromRow, ProfileRow } from '../entities/user';
+import { userFromRow } from '../entities/user';
+import type { AppUser, ProfileRow } from '../entities/user';
 import { unwrap, ServiceError } from './errors';
 
 export interface WaitlistEntry {

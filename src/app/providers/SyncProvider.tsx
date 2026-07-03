@@ -2,8 +2,9 @@
  * Sync Context — provides sync status to the app.
  */
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { syncEngine, SyncStatus } from '../../sync';
+import { createContext, useContext, useEffect, useState } from 'react';
+import { syncEngine } from '../../sync';
+import type { SyncStatus } from '../../sync';
 
 interface SyncContextValue {
   status: SyncStatus;
@@ -42,6 +43,7 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- provider pattern: hook must live alongside its context
 export function useSync(): SyncContextValue {
   const ctx = useContext(SyncContext);
   if (!ctx) throw new Error('useSync must be used within SyncProvider');

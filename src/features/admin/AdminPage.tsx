@@ -1,15 +1,15 @@
 /**
  * Admin Page — waitlist management and user administration.
  *
- * Note: This page is only visible to admin users (frontend guard),
- * but ALL operations are also enforced by RLS on the server.
- * The frontend guard is purely for UX, not security.
+ * Note: Frontend guard is UI-only. All operations are RLS-enforced server-side.
  */
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { adminService, WaitlistEntry } from '../../services/adminService';
+import { adminService } from '../../services/adminService';
+import type { WaitlistEntry } from '../../services/adminService';
 import { useAuth } from '../../app/providers/AuthProvider';
+import { format } from 'date-fns';
 
 const adminKeys = {
   waitlist: (status?: string) => ['admin', 'waitlist', status] as const,
@@ -34,57 +34,53 @@ export default function AdminPage() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: (waitlistId: string) =>
-      adminService.approveUser(waitlistId, user!.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin'] });
-    },
+    mutationFn: (waitlistId: string) => adminService.approveUser(waitlistId, user!.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin'] }),
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (waitlistId: string) =>
-      adminService.rejectUser(waitlistId, user!.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin'] });
-    },
+    mutationFn: (waitlistId: string) => adminService.rejectUser(waitlistId, user!.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin'] }),
   });
 
   return (
     <div className="page admin-page">
-      <h1>Admin Panel</h1>
+      <h1>Admin</h1>
 
-      {/* Tabs */}
       <div className="tab-bar">
         <button
-          className={`tab ${activeTab === 'waitlist' ? 'tab-active' : ''}`}
+          className={`tab${activeTab === 'waitlist' ? ' tab-active' : ''}`}
           onClick={() => setActiveTab('waitlist')}
+          type="button"
         >
           Waitlist
         </button>
         <button
-          className={`tab ${activeTab === 'users' ? 'tab-active' : ''}`}
+          className={`tab${activeTab === 'users' ? ' tab-active' : ''}`}
           onClick={() => setActiveTab('users')}
+          type="button"
         >
           Users
         </button>
       </div>
 
-      {/* Waitlist tab */}
       {activeTab === 'waitlist' && (
-        <div className="admin-section">
+        <div>
           <div className="filter-bar">
             {(['pending', 'approved', 'rejected'] as const).map((s) => (
               <button
                 key={s}
-                className={`filter-btn ${statusFilter === s ? 'filter-active' : ''}`}
+                className={`filter-btn${statusFilter === s ? ' filter-active' : ''}`}
                 onClick={() => setStatusFilter(s)}
+                type="button"
               >
                 {s}
               </button>
             ))}
             <button
-              className={`filter-btn ${!statusFilter ? 'filter-active' : ''}`}
+              className={`filter-btn${!statusFilter ? ' filter-active' : ''}`}
               onClick={() => setStatusFilter(undefined)}
+              type="button"
             >
               All
             </button>
@@ -93,7 +89,7 @@ export default function AdminPage() {
           {wlLoading ? (
             <div className="loading-spinner" />
           ) : !waitlist || waitlist.length === 0 ? (
-            <div className="empty-state">
+            <div className="empty-state" style={{ padding: 'var(--space-2xl) 0' }}>
               <p className="empty-title">No {statusFilter ?? ''} applications</p>
             </div>
           ) : (
@@ -105,11 +101,11 @@ export default function AdminPage() {
                     <span className={`badge badge-${entry.status}`}>{entry.status}</span>
                   </div>
                   {entry.reason && (
-                    <p className="waitlist-reason">{entry.reason}</p>
+                    <p className="waitlist-reason">"{entry.reason}"</p>
                   )}
                   <div className="waitlist-card-footer">
                     <span className="waitlist-date">
-                      {new Date(entry.createdAt).toLocaleDateString()}
+                      {format(new Date(entry.createdAt), 'MMM d, yyyy')}
                     </span>
                     {entry.status === 'pending' && (
                       <div className="waitlist-actions">
@@ -117,6 +113,7 @@ export default function AdminPage() {
                           className="btn-success btn-sm"
                           onClick={() => approveMutation.mutate(entry.id)}
                           disabled={approveMutation.isPending}
+                          type="button"
                         >
                           Approve
                         </button>
@@ -124,6 +121,7 @@ export default function AdminPage() {
                           className="btn-danger btn-sm"
                           onClick={() => rejectMutation.mutate(entry.id)}
                           disabled={rejectMutation.isPending}
+                          type="button"
                         >
                           Reject
                         </button>
@@ -137,13 +135,12 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* Users tab */}
       {activeTab === 'users' && (
-        <div className="admin-section">
+        <div>
           {usersLoading ? (
             <div className="loading-spinner" />
           ) : !users || users.length === 0 ? (
-            <div className="empty-state">
+            <div className="empty-state" style={{ padding: 'var(--space-2xl) 0' }}>
               <p className="empty-title">No users</p>
             </div>
           ) : (
@@ -163,7 +160,7 @@ export default function AdminPage() {
                       <td>{u.email}</td>
                       <td><span className={`badge badge-${u.role}`}>{u.role}</span></td>
                       <td><span className={`badge badge-${u.status}`}>{u.status}</span></td>
-                      <td>{new Date(u.createdAt).toLocaleDateString()}</td>
+                      <td>{format(new Date(u.createdAt), 'MMM d, yyyy')}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -4,9 +4,10 @@
  * Intent-based methods, no raw Supabase calls in components.
  */
 
-import { Session, User } from '@supabase/supabase-js';
+import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
-import { AppUser, userFromRow, ProfileRow } from '../entities/user';
+import { userFromRow } from '../entities/user';
+import type { AppUser, ProfileRow } from '../entities/user';
 import { unwrap, AuthError } from './errors';
 
 export interface AuthState {

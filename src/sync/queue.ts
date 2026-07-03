@@ -23,7 +23,8 @@
  * - For multi-device scenarios, the last device to sync wins.
  */
 
-import { openDB, IDBPDatabase, DBSchema } from 'idb';
+import { openDB } from 'idb';
+import type { IDBPDatabase, DBSchema } from 'idb';
 
 // ─── Types ─────────────────────────────────────────────────
 

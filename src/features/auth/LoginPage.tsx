@@ -1,10 +1,31 @@
 /**
- * Login Page — magic link (OTP) authentication.
+ * Login Page — magic link sign-in.
+ * Minimal, typographic. Large serif logo, generous spacing.
  */
 
 import React, { useState } from 'react';
 import { useAuth } from '../../app/providers/AuthProvider';
 import { APP_NAME, APP_TAGLINE } from '../../shared/constants';
+
+function MailIcon() {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ color: 'var(--accent)' }}
+    >
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </svg>
+  );
+}
 
 export default function LoginPage() {
   const { signInWithOtp, isAuthenticated } = useAuth();
@@ -13,7 +34,6 @@ export default function LoginPage() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
 
-  // If already authenticated, the router will redirect.
   if (isAuthenticated) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -40,11 +60,13 @@ export default function LoginPage() {
 
         {sent ? (
           <div className="auth-message">
-            <div className="auth-icon">✉️</div>
-            <h2>Check your email</h2>
+            <div className="auth-icon-wrap">
+              <MailIcon />
+            </div>
+            <h2>Check your inbox</h2>
             <p>
               We sent a magic link to <strong>{email}</strong>.
-              Click the link to sign in.
+              Click it to sign in — no password needed.
             </p>
             <button
               className="btn-ghost"
@@ -56,7 +78,9 @@ export default function LoginPage() {
         ) : (
           <form className="auth-form" onSubmit={handleSubmit}>
             <div className="form-group">
-              <label htmlFor="email" className="form-label">Email address</label>
+              <label htmlFor="email" className="form-label">
+                Email address
+              </label>
               <input
                 id="email"
                 type="email"
@@ -66,6 +90,7 @@ export default function LoginPage() {
                 placeholder="you@example.com"
                 required
                 autoFocus
+                autoComplete="email"
                 disabled={isSubmitting}
               />
             </div>
@@ -77,14 +102,13 @@ export default function LoginPage() {
               className="btn-primary btn-full"
               disabled={isSubmitting || !email}
             >
-              {isSubmitting ? 'Sending...' : 'Send Magic Link'}
+              {isSubmitting ? 'Sending…' : 'Send magic link'}
             </button>
           </form>
         )}
 
         <p className="auth-footer">
-          This is an invite-only journal. If you don't have access yet,
-          your account will be reviewed after sign-up.
+          This is an invite-only journal. New accounts are reviewed before access is granted.
         </p>
       </div>
     </div>

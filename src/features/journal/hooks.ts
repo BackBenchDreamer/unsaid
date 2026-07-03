@@ -9,7 +9,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { journalService } from '../../services/journalService';
 import { syncEngine } from '../../sync';
 import { useAuth } from '../../app/providers/AuthProvider';
-import { Entry, EntryUpsertPayload } from '../../entities/entry';
+import type { Entry, EntryUpsertPayload } from '../../entities/entry';
 
 // ─── Query Keys ────────────────────────────────────────────
 

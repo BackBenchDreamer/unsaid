@@ -2,7 +2,6 @@
  * Application entry point.
  */
 
-import React from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './providers/AuthProvider';
 import { SyncProvider } from './providers/SyncProvider';

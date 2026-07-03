@@ -7,14 +7,12 @@
 
 import { supabase } from './supabaseClient';
 import {
-  Entry,
-  EntryRow,
-  EntryUpsertPayload,
   entryFromRow,
   entryToRowPayload,
   validateEntryPayload,
 } from '../entities/entry';
-import { HeatmapCell, Memory } from '../entities/insight';
+import type { Entry, EntryRow, EntryUpsertPayload } from '../entities/entry';
+import type { HeatmapCell, Memory } from '../entities/insight';
 import { unwrap, ValidationError, ServiceError } from './errors';
 
 export const journalService = {

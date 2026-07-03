@@ -9,9 +9,10 @@
  * Each mutation is processed idempotently via UPSERT.
  */
 
-import { syncQueue, SyncMutation } from './queue';
+import { syncQueue } from './queue';
+import type { SyncMutation } from './queue';
 import { journalService } from '../services/journalService';
-import { EntryUpsertPayload } from '../entities/entry';
+import type { EntryUpsertPayload } from '../entities/entry';
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'error';
 
