@@ -56,21 +56,13 @@ export const authService = {
   /**
    * Get the app-level profile for the current user.
    *
-   * Calls the ensure_profile RPC first so that the profile and user_settings
-   * rows are guaranteed to exist even if the UPDATE trigger was missed (e.g.
-   * Supabase maintenance, pre-migration sign-ups).  The RPC is a no-op when
-   * both rows already exist, so this is always safe to call on sign-in.
+   * Fetches the profile first (critical path), then calls ensure_profile as
+   * a best-effort fallback only when the profile is missing.  The RPC is
+   * never allowed to block or interfere with the primary SELECT.
    */
   async getProfile(): Promise<AppUser | null> {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
-
-    // Best-effort ensure: provision profile+settings rows if missing.
-    // Failure is non-fatal — profile fetch below will still reflect reality.
-    await supabase.rpc('ensure_profile').then(
-      () => {},
-      () => {}, // silently ignore — fallback, not critical path
-    );
 
     const result = await supabase
       .from('profiles')
@@ -78,13 +70,39 @@ export const authService = {
       .eq('id', user.id)
       .single();
 
-    if (result.error && result.error.code === 'PGRST116') {
-      // Profile still doesn't exist (e.g. unverified user with no confirmed email).
-      return null;
+    // Happy path — profile exists and RLS allowed the read.
+    if (!result.error && result.data) {
+      return userFromRow(result.data as ProfileRow);
     }
 
-    const row = unwrap(result) as ProfileRow;
-    return userFromRow(row);
+    // No error but no data = RLS filtered the row (shouldn't happen for own
+    // profile, but treat it the same as missing).
+    const isMissing =
+      result.data === null ||
+      (result.error !== null && result.error.code === 'PGRST116');
+
+    if (isMissing) {
+      // Call ensure_profile to provision the row if it doesn't exist yet.
+      // This is the resilience fallback for the verified-trigger migration.
+      const { error: rpcError } = await supabase.rpc('ensure_profile');
+      if (rpcError) {
+        // RPC not deployed yet — nothing we can do, treat as not signed in.
+        return null;
+      }
+
+      // Retry once after provisioning.
+      const retry = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (retry.error || !retry.data) return null;
+      return userFromRow(retry.data as ProfileRow);
+    }
+
+    // Any other unexpected DB error.
+    throw unwrap(result);
   },
 
   /**
