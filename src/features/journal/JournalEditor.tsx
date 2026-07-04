@@ -30,6 +30,7 @@ import type { AiAction } from '../../entities/insight';
 import { ServiceError } from '../../services/errors';
 import { AUTOSAVE_DEBOUNCE_MS, MOOD_EMOJIS } from '../../shared/constants';
 import { formatDisplayDate, getTodayLocal } from '../../shared/utils/dates';
+import { getEmotionValence } from '../../shared/utils/emotions';
 
 // ─── Sentiment emoji map ───────────────────────────────────
 
@@ -38,18 +39,6 @@ const SENTIMENT_EMOJI: Record<string, string> = {
   neutral: '😐',
   negative: '😔',
 };
-
-// ─── Emotion valence helper ────────────────────────────────
-
-const POSITIVE_EMOTIONS = new Set(['joy', 'surprise']);
-const NEGATIVE_EMOTIONS = new Set(['anger', 'disgust', 'fear', 'sadness']);
-
-function getEmotionValence(label: string): 'positive' | 'negative' | 'neutral' {
-  const l = label.toLowerCase();
-  if (POSITIVE_EMOTIONS.has(l)) return 'positive';
-  if (NEGATIVE_EMOTIONS.has(l)) return 'negative';
-  return 'neutral';
-}
 
 // ─── AiMenu — extensible AI action popover ─────────────────
 

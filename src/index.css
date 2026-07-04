@@ -1685,3 +1685,130 @@ a:hover { color: var(--accent-hover); }
   /* Settings token form: stack button row vertically if needed */
   .settings-token-form .btn-primary { width: 100%; }
 }
+
+/* ─── Patterns Over Time (Milestone 2) ────────────────────── */
+
+/* Weekly Invitation Card */
+.weekly-invitation-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-xl);
+}
+.weekly-invitation-lead {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-xs);
+}
+.weekly-invitation-sub {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* Weekly Summary Card (generated narrative) */
+.weekly-summary-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-xl);
+}
+.weekly-narrative {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-sm);
+}
+.weekly-arc {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 0 0 var(--space-sm);
+}
+.weekly-themes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+/* Theme pills — used in weekly summary and recurring themes section */
+.theme-pill {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-full);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+/* Weighted variant used in recurring themes section — font-size and
+   opacity are set inline; the class just provides base styles. */
+.theme-pill-weighted {
+  transition: opacity 0.15s ease;
+}
+.theme-pill-weighted:hover {
+  opacity: 1 !important;
+  color: var(--text-primary);
+}
+
+/* Emotional Timeline */
+.emotional-timeline {
+  display: flex;
+  gap: var(--space-xs);
+  align-items: flex-end;
+  min-height: 48px;
+  flex-wrap: wrap;
+}
+.timeline-bar-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 20px;
+  max-width: 48px;
+  cursor: default;
+}
+.timeline-bar {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 40px;
+  border-radius: 3px;
+  overflow: hidden;
+  gap: 1px;
+}
+.timeline-segment {
+  min-height: 2px;
+}
+.timeline-segment.positive { background: var(--success); }
+.timeline-segment.negative { background: var(--danger); }
+.timeline-segment.neutral  { background: var(--text-muted); opacity: 0.5; }
+.timeline-date-label {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  width: 100%;
+  text-align: center;
+}
+
+/* ─── Mobile: Patterns Over Time ──────────────────────────── */
+@media (max-width: 680px) {
+  .weekly-invitation-card,
+  .weekly-summary-card {
+    padding: var(--space-lg);
+  }
+  .weekly-invitation-card .btn-primary {
+    width: 100%;
+  }
+  .emotional-timeline {
+    gap: 3px;
+  }
+  .timeline-bar-wrapper {
+    min-width: 16px;
+  }
+}

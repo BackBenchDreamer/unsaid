@@ -2,11 +2,11 @@
 
 > *Your private journal. Unspoken thoughts given form.*
 
-UnSaid is an invite-only personal journaling app with offline-first sync, mood tracking, streaks, year-in-review heatmaps, and optional AI sentiment analysis via Hugging Face. Built with React 19, TypeScript, and Supabase.
+UnSaid is an invite-only personal journaling app with offline-first sync, mood tracking, streaks, year-in-review heatmaps, and AI-powered emotional reflection. Built with React 19, TypeScript, and Supabase.
 
 > **AI pipeline status (as of 2026-07-03):** fully operational and end-to-end verified. See [AI Insights](#ai-insights) for operational notes.
 
-> **Milestone 1 release candidate (2026-07-03):** All review fixes applied — see [Changelog](#changelog).
+> **Milestone 2 (Patterns Over Time) branch:** `feature/patterns-over-time` — see [Changelog](#changelog) for what changed.
 
 ## Features
 
@@ -16,10 +16,12 @@ UnSaid is an invite-only personal journaling app with offline-first sync, mood t
 - **Streaks** — current and longest consecutive-day streak, computed from local calendar dates
 - **Year heatmap** — mood-coloured GitHub-style activity grid via a Postgres RPC
 - **"On This Day" memories** — entries from the same day in past years
-- **AI Insights** — opt-in sentiment analysis via a Hugging Face model (stored in `insights` table); explicit user action, never automatic
+- **Per-entry AI reflection** — opt-in emotional analysis via HuggingFace + Groq; explicit user action, never automatic; cached with `source_hash`
+- **Weekly reflection** — synthesises a week's entries (using existing per-entry reflections where available) into a narrative emotional arc; invitation-only when ≥ 3 entries exist; staleness-aware
+- **Patterns dashboard** — Insights page answers "What has my recent emotional journey looked like?" with: weekly narrative, recurring themes (frequency-weighted pills), emotional timeline (CSS stacked bars), and per-entry reflection cards
 - **Offline-first sync** — writes queue to IndexedDB and drain on reconnect; last-write-wins per day
 - **Invite-only access** — new signups land in a waitlist; an admin approves/rejects from the admin panel
-- **Settings** — per-user theme (dark/light) and HF token stored encrypted server-side
+- **Settings** — per-user theme (dark/light) and HF + Groq tokens stored encrypted server-side
 
 ## Stack
 
@@ -88,6 +90,8 @@ In the Supabase dashboard → **Authentication → Settings**:
 supabase login
 supabase link --project-ref <your-project-ref>
 supabase functions deploy analyze-sentiment
+supabase functions deploy generate-reflection
+supabase functions deploy generate-weekly-summary
 supabase functions deploy encrypt-token
 supabase functions deploy approve-waitlist
 ```
@@ -147,19 +151,26 @@ src/
 │   ├── auth/         # LoginPage, WaitlistPage
 │   ├── dashboard/    # Streak, heatmap, "On This Day" memories
 │   ├── journal/      # Editor (Lexical), history, hooks
-│   ├── insights/     # AI sentiment insights
-│   ├── settings/     # Theme + HF token settings
+│   ├── insights/     # AI reflection dashboard (per-entry + weekly patterns)
+│   ├── settings/     # Theme + HF/Groq token settings
 │   └── admin/        # Admin waitlist panel
 ├── services/         # Supabase calls — always return domain types, never raw rows
-├── shared/           # Constants, date utilities
+├── shared/
+│   ├── constants.ts  # App-wide constants incl. WEEKLY_REFLECTION_MIN_ENTRIES
+│   └── utils/
+│       ├── dates.ts      # getTodayLocal, formatDisplayDate, etc.
+│       ├── hash.ts       # sha256Hex, sourceEnvelope (used for cache keys)
+│       └── emotions.ts   # getEmotionValence, POSITIVE_EMOTIONS, NEGATIVE_EMOTIONS
 ├── sync/             # Offline queue (IndexedDB) + sync engine
 └── db/               # SQL files — apply manually in Supabase SQL editor
 
 supabase/
 └── functions/
-    ├── analyze-sentiment/  # POST {entryId} → runs HF model, writes to insights
-    ├── encrypt-token/      # POST {token} → AES-GCM encrypt, writes to user_settings
-    └── approve-waitlist/   # POST {waitlistId, action} → admin-only approval
+    ├── analyze-sentiment/        # POST {entryId} → HF emotion model → SentimentPayload
+    ├── generate-reflection/      # POST {entryId} → HF + Groq → ReflectionPayload
+    ├── generate-weekly-summary/  # POST {weekStart} → Groq → WeeklyPayload (M2)
+    ├── encrypt-token/            # POST {token, provider} → AES-GCM ciphertext
+    └── approve-waitlist/         # POST {waitlistId, action} → admin-only approval
 ```
 
 ## Access Control
@@ -215,6 +226,89 @@ The `LexicalComposer` is not mounted until `editorSeedReady = true`, which is se
 The fix gates the `LexicalComposer` on `editorSeedReady`, so `InitPlugin` always receives the correct content on its first (and only) run.
 
 ## AI Insights
+
+### Milestone 2 — Patterns Over Time
+
+Weekly synthesis builds on per-entry reflections to answer "What has my recent emotional journey looked like?" using narrative prose rather than statistics.
+
+**Hierarchical architecture:**
+```
+Journal Entry
+      ↓
+Per-entry Reflection  (type='reflection', entry_id=UUID)     ← M1
+      ↓
+Weekly Synthesis      (type='summary',    entry_id=NULL,
+                       period_start/end=Mon–Sun week)         ← M2
+```
+
+**Weekly synthesis flow:**
+1. User navigates to `/insights`. If ≥ `WEEKLY_REFLECTION_MIN_ENTRIES` entries exist for the current week and no weekly summary exists, an invitation card appears.
+2. User clicks "Reflect on this week" — calls `generate-weekly-summary` Edge Function.
+3. Edge Function uses existing per-entry reflection summaries where available; falls back to raw entry excerpts for unreflected entries (best-effort).
+4. Groq produces a narrative synthesis (not statistics): `narrative`, `dominantEmotions`, `recurringThemes`, `emotionalArc`.
+5. Result cached in `insights` table with `entry_id=NULL`, `period_start`, `period_end`, and `source_hash`.
+6. Once generated, the invitation is replaced by the narrative. A subtle "may be outdated" notice + Regenerate appears only if staleness is detected.
+
+**Staleness detection for weekly summaries:**
+- Mirror of the per-entry staleness model.
+- If any per-entry reflection was created _after_ the weekly summary's `createdAt`, the summary is considered stale.
+- A secondary async SHA-256 check compares the stored `source_hash` against a recomputed hash from current reflection source hashes.
+- Only the staleness notice + Regenerate appear when stale — never a Regenerate button on a fresh summary.
+
+**Independent versioning:**
+- Per-entry reflection: `promptVersion = '2.0.0'` (unchanged).
+- Weekly synthesis: `weeklyPromptVersion = '1.0.0'` (independent; stored in `_meta`).
+- Bumping either version invalidates only the relevant insight type's caches.
+
+**Insights dashboard — section order:**
+1. **This week** — weekly narrative (or invitation, or subtle hint)
+2. **Recurring themes** — frequency-weighted pill cloud from all reflection `themes[]` arrays
+3. **Emotional balance over time** — CSS-only stacked bars for last 10 reflected entries
+4. **Mood overview** — all-time distribution bar (preserved from M1)
+5. **Recent reflections** — per-entry reflection cards (preserved from M1)
+
+**`WeeklyPayload` schema:**
+```json
+{
+  "narrative": "This week began with uncertainty but gradually shifted toward a quieter focus.",
+  "dominantEmotions": [
+    { "label": "Joy",     "score": 0.38 },
+    { "label": "Neutral", "score": 0.32 }
+  ],
+  "recurringThemes": ["Work", "Rest"],
+  "emotionalArc": "from uncertainty toward quiet focus",
+  "suggestedReflection": null,
+  "_meta": {
+    "promptVersion": "2.0.0",
+    "weeklyPromptVersion": "1.0.0",
+    "provider": "groq",
+    "model": "llama-3.1-8b-instant",
+    "generatedAt": "2026-07-14T09:00:00.000Z",
+    "generationMs": 2800
+  }
+}
+```
+
+> `suggestedReflection` is an optional field reserved for future use (coaching prompts). Not produced by the M2 Edge Function.
+
+**`generate-weekly-summary` call flow:**
+1. Validate JWT → resolve `user_id`.
+2. Parse and validate `weekStart` ("YYYY-MM-DD" Monday); compute `weekEnd` = weekStart + 6 days.
+3. Fetch all entries for the user in `[weekStart, weekEnd]`.
+4. Guard: 0 entries → `INSUFFICIENT_ENTRIES` (422).
+5. Fetch `user_settings` for `groq_token_encrypted`, `groq_model`.
+6. Guard: `groq_token_encrypted IS NULL` → `WEEKLY_NOT_CONFIGURED` (422).
+7. Fetch existing `reflection` insights for entries in the week.
+8. Build `entryHashes[]`: use `reflection.source_hash` for reflected entries; compute `sha256Hex(sourceEnvelope(content, 'entry', id))` for unreflected entries.
+9. Compute `weeklySourceHash = sha256Hex(JSON.stringify({ weekStart, weekEnd, weeklyPromptVersion, model, entryHashes }))`.
+10. Cache check: if stored `summary` insight matches hash and passes `isWeeklyResult()` → return cached.
+11. Decrypt Groq token; call Groq LLM with synthesis prompt + weekly context block.
+12. Parse + validate Groq JSON response.
+13. Build `WeeklyPayload` with `_meta.weeklyPromptVersion`.
+14. Upsert to `insights` with `entry_id=NULL`, `period_start`, `period_end`, `type='summary'`, `source_hash`, `updated_at=now()`.
+15. Return `{ result, meta: { cached, generationMs } }`.
+
+---
 
 ### Milestone 1 — Foundation of Reflection
 
@@ -422,6 +516,7 @@ Run in order in the Supabase SQL Editor (Dashboard → SQL Editor → New query 
 | `src/db/migrations/003_reflection_type.sql` | Add `'reflection'` insight type; add `period_start`, `period_end`, `updated_at` columns | Reflection insights |
 | `src/db/migrations/004_groq_provider_settings.sql` | Add `groq_token_encrypted`, `groq_model` columns to `user_settings` | **Settings page + Groq** |
 | `src/db/migrations/005_security_hardening.sql` | Fix `search_path` on all DB functions; add ownership guards to `get_heatmap` + `get_memories`; revoke anon access to internal RPCs | **Security** |
+| `src/db/migrations/006_weekly_summary_index.sql` | Create partial unique index `uq_insight_summary_period` on `(user_id, type, period_start, period_end) WHERE entry_id IS NULL` | **Weekly reflection (M2)** |
 
 After running migration 004, if settings still fail to load, reload the PostgREST schema cache:
 **Supabase Dashboard → Settings → API → Reload Schema**
@@ -473,6 +568,30 @@ Both functions now raise `Unauthorized` unless `p_user_id = auth.uid()`.
 - **`auth_leaked_password_protection` disabled** — not applicable. UnSaid uses magic-link / email OTP exclusively. There are no passwords to check against HaveIBeenPwned.
 
 ## Changelog
+
+### Milestone 2 — Patterns Over Time (feature/patterns-over-time)
+
+**New features:**
+- **Weekly reflection** — synthesises a week's entries into a narrative emotional arc using the `generate-weekly-summary` Edge Function. Best-effort: uses per-entry reflection summaries where available, falls back to raw entry excerpts. Cached with independent `weeklyPromptVersion = '1.0.0'` so per-entry caches are never disturbed.
+- **Recurring themes section** — frequency-weighted pill cloud aggregated from all reflection `themes[]` arrays. Top 8 themes shown; size scales with frequency.
+- **Emotional timeline** — CSS-only stacked bars showing positive/neutral/negative balance for the last 10 reflected entries, ordered by entry date.
+- **Weekly staleness detection** — mirrors the per-entry staleness model. Shows "may be outdated" notice + secondary Regenerate only when staleness is detected; never shows Regenerate on a fresh summary.
+- **`WeeklyPayload`** type with optional `suggestedReflection?: string` field (reserved for future coaching prompts; not produced in M2).
+- **`WEEKLY_REFLECTION_MIN_ENTRIES`** constant in `src/shared/constants.ts` — controls the invitation threshold without touching business logic.
+
+**Architecture changes:**
+- New Edge Function: `supabase/functions/generate-weekly-summary/index.ts`.
+- New DB migration: `src/db/migrations/006_weekly_summary_index.sql` — partial unique index for `entry_id IS NULL` period rows.
+- `EntryInsight` extended with `periodStart: string | null` and `periodEnd: string | null`.
+- `InsightMeta` extended with optional `weeklyPromptVersion?: string`.
+- `insightsService.getInsights()` now fetches and maps `period_start`/`period_end`.
+- `getEmotionValence()`, `POSITIVE_EMOTIONS`, `NEGATIVE_EMOTIONS` extracted to `src/shared/utils/emotions.ts` — was duplicated between `InsightsPage.tsx` and `JournalEditor.tsx`.
+- Insights dashboard redesigned: Weekly Reflection → Recurring Themes → Emotional Timeline → Mood Overview → Recent Reflections.
+
+**Required deployment steps:**
+1. Apply `src/db/migrations/006_weekly_summary_index.sql` in Supabase SQL Editor.
+2. Deploy: `supabase functions deploy generate-weekly-summary`.
+3. No schema cache reload required (no new columns or tables in this migration).
 
 ### Security hardening (migration 005, 2026-07-03)
 

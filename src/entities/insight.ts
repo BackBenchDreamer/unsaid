@@ -67,6 +67,13 @@ export interface InsightMeta {
   generatedAt: string;
   /** Wall-clock milliseconds for the inference call. 0 = cache hit. */
   generationMs: number;
+  /**
+   * Independent version for weekly summary prompts. Only present on
+   * type='summary' rows. Starts at '1.0.0' and is bumped separately from
+   * promptVersion so that per-entry reflection caches are never disturbed
+   * by changes to the weekly prompt.
+   */
+  weeklyPromptVersion?: string;
 }
 
 /**
@@ -132,6 +139,68 @@ export interface ReflectionResult {
   question: string;
 }
 
+// ─── Weekly summary types ─────────────────────────────────────
+
+/**
+ * Full typed payload for type='summary' rows (weekly synthesis).
+ * Stored in the DB; includes _meta for self-description.
+ * _meta.weeklyPromptVersion tracks the weekly prompt version independently
+ * from the per-entry promptVersion so that per-entry caches are never
+ * invalidated by changes to the weekly synthesis prompt.
+ *
+ * suggestedReflection is an optional field reserved for future use
+ * (e.g. gentle coaching or journaling prompts). It is not produced by
+ * the M2 Edge Function but is included in the schema so that future
+ * prompt versions can add it without a payload migration.
+ */
+export interface WeeklyPayload {
+  /** 2–4 sentence narrative synthesising the week's emotional arc. */
+  narrative: string;
+  /** Top emotions aggregated across the week's entries, sorted by score desc. */
+  dominantEmotions: ReflectionEmotion[];
+  /** Recurring themes detected across the week, deduplicated. */
+  recurringThemes: string[];
+  /** Short phrase describing the emotional trajectory, e.g. "from uncertainty toward calm". */
+  emotionalArc: string;
+  /**
+   * Optional coaching prompt or suggested reflection question.
+   * Reserved for future use — not produced by the M2 Edge Function.
+   * Present on the schema to allow future prompt versions to add it
+   * without requiring a payload migration.
+   */
+  suggestedReflection?: string;
+  _meta: InsightMeta;
+}
+
+/**
+ * Edge Function wire return type — what generateWeeklySummary() returns to the client.
+ * Identical to WeeklyPayload minus _meta.
+ * suggestedReflection is optional here too for forward compatibility.
+ */
+export interface WeeklyResult {
+  narrative: string;
+  dominantEmotions: ReflectionEmotion[];
+  recurringThemes: string[];
+  emotionalArc: string;
+  suggestedReflection?: string;
+}
+
+/**
+ * Type-narrowing guard: returns true if p contains WeeklyPayload fields.
+ * Does NOT require suggestedReflection — it is optional and absent in M2.
+ * Checks structural shape only — does not require _meta.
+ */
+export function isWeeklyPayload(p: unknown): p is WeeklyPayload {
+  if (typeof p !== 'object' || p === null) return false;
+  const v = p as Record<string, unknown>;
+  return (
+    typeof v.narrative === 'string' && v.narrative.trim().length > 0 &&
+    Array.isArray(v.dominantEmotions) &&
+    Array.isArray(v.recurringThemes) &&
+    typeof v.emotionalArc === 'string'
+  );
+}
+
 /**
  * A typed insight row read from the DB via insightsService.getInsights().
  * The payload field is open-schema (Record<string, unknown>) to accommodate
@@ -142,14 +211,27 @@ export interface EntryInsight {
   /** The journal entry this insight was generated from. Null for user-level insights. */
   entryId: string | null;
   type: InsightType;
-  /** Open-schema — use isSentimentPayload() or isReflectionPayload() to narrow. */
+  /** Open-schema — use isSentimentPayload(), isReflectionPayload(), or isWeeklyPayload() to narrow. */
   payload: Record<string, unknown>;
   /**
    * SHA-256 of sourceEnvelope(content, promptVersion, model) at generation time.
    * Null for legacy rows (pre-migration). Null rows are treated as always-stale.
+   * For weekly summary rows: SHA-256 of the weekly source envelope.
    */
   sourceHash: string | null;
   createdAt: string;
+  /**
+   * ISO date string ("YYYY-MM-DD") for the start of the period this insight covers.
+   * Null for per-entry insights (type='reflection' or 'sentiment').
+   * Set for period insights (type='summary' or 'pattern').
+   */
+  periodStart: string | null;
+  /**
+   * ISO date string ("YYYY-MM-DD") for the end of the period this insight covers.
+   * Null for per-entry insights (type='reflection' or 'sentiment').
+   * Set for period insights (type='summary' or 'pattern').
+   */
+  periodEnd: string | null;
 }
 
 /**

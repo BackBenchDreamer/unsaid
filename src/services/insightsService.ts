@@ -11,7 +11,7 @@
 
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
-import type { EntryInsight, SentimentResult, ReflectionResult } from '../entities/insight';
+import type { EntryInsight, SentimentResult, ReflectionResult, WeeklyResult } from '../entities/insight';
 import { ServiceError } from './errors';
 
 /**
@@ -56,6 +56,8 @@ interface InsightRow {
   payload: Record<string, unknown>;
   source_hash: string | null;
   created_at: string;
+  period_start: string | null;
+  period_end: string | null;
 }
 
 /**
@@ -66,6 +68,15 @@ interface InsightRow {
 export type GenerateReflectionResult =
   | { ok: true; data: ReflectionResult }
   | { ok: false; code: 'REFLECTION_NOT_CONFIGURED' };
+
+/**
+ * Result type for generateWeeklySummary().
+ * Returns a typed value (not a thrown error) for expected non-error conditions
+ * so the hook can handle them without showing an error state.
+ */
+export type GenerateWeeklySummaryResult =
+  | { ok: true; data: WeeklyResult }
+  | { ok: false; code: 'WEEKLY_NOT_CONFIGURED' | 'INSUFFICIENT_ENTRIES' };
 
 export const insightsService = {
   /**
@@ -79,7 +90,7 @@ export const insightsService = {
   async getInsights(userId: string, type?: string): Promise<EntryInsight[]> {
     let query = supabase
       .from('insights')
-      .select('id, entry_id, type, payload, source_hash, created_at')
+      .select('id, entry_id, type, payload, source_hash, created_at, period_start, period_end')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
@@ -97,6 +108,8 @@ export const insightsService = {
       payload: r.payload,
       sourceHash: r.source_hash,
       createdAt: r.created_at,
+      periodStart: r.period_start,
+      periodEnd: r.period_end,
     }));
   },
 
@@ -202,6 +215,62 @@ export const insightsService = {
     if (import.meta.env.DEV) {
       console.debug(
         `[reflection] entry=${entryId} cached=${response.meta?.cached} generationMs=${response.meta?.generationMs}`,
+      );
+    }
+
+    return { ok: true, data: response.result };
+  },
+
+  /**
+   * Trigger weekly summary generation for the given week start date.
+   *
+   * Builds on existing per-entry reflections where available (best-effort):
+   *   - For entries that have been reflected on: uses the stored reflection summary.
+   *   - For entries without a reflection: uses the first 300 chars of raw content.
+   *
+   * Returns a typed result rather than throwing for expected conditions:
+   *   { ok: false, code: 'WEEKLY_NOT_CONFIGURED' }  — Groq not configured
+   *   { ok: false, code: 'INSUFFICIENT_ENTRIES' }   — fewer entries than required
+   *
+   * All other errors are thrown as ServiceErrors.
+   *
+   * @param weekStart  Monday of the target week in "YYYY-MM-DD" format.
+   */
+  async generateWeeklySummary(weekStart: string): Promise<GenerateWeeklySummaryResult> {
+    const { data, error } = await supabase.functions.invoke('generate-weekly-summary', {
+      body: { weekStart },
+    });
+
+    if (error) {
+      let code = 'EDGE_FUNCTION_ERROR';
+      let message = error.message;
+
+      if (error instanceof FunctionsHttpError) {
+        try {
+          const body = await (error.context as Response).json() as EdgeFunctionErrorResponse;
+          if (body?.code) code = body.code;
+          if (body?.error) message = body.error;
+        } catch {
+          // context body already consumed or not JSON — use generic message
+        }
+      }
+
+      // Expected non-error conditions — caller handles without showing error UI.
+      if (code === 'WEEKLY_NOT_CONFIGURED') {
+        return { ok: false, code: 'WEEKLY_NOT_CONFIGURED' };
+      }
+      if (code === 'INSUFFICIENT_ENTRIES') {
+        return { ok: false, code: 'INSUFFICIENT_ENTRIES' };
+      }
+
+      throw new ServiceError(message, code);
+    }
+
+    const response = data as { result: WeeklyResult; meta: { cached: boolean; generationMs: number } };
+
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[weekly-summary] weekStart=${weekStart} cached=${response.meta?.cached} generationMs=${response.meta?.generationMs}`,
       );
     }
 
