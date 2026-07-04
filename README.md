@@ -421,9 +421,12 @@ Run in order in the Supabase SQL Editor (Dashboard → SQL Editor → New query 
 | `src/db/migrations/002_remove_invalid_cached_insights.sql` | Delete all `sentiment` rows with `confidence = 0` (bug-era rows) | Clean cache |
 | `src/db/migrations/003_reflection_type.sql` | Add `'reflection'` insight type; add `period_start`, `period_end`, `updated_at` columns | Reflection insights |
 | `src/db/migrations/004_groq_provider_settings.sql` | Add `groq_token_encrypted`, `groq_model` columns to `user_settings` | **Settings page + Groq** |
+| `src/db/migrations/005_security_hardening.sql` | Fix `search_path` on all DB functions; add ownership guards to `get_heatmap` + `get_memories`; revoke anon access to internal RPCs | **Security** |
 
 After running migration 004, if settings still fail to load, reload the PostgREST schema cache:
 **Supabase Dashboard → Settings → API → Reload Schema**
+
+Migration 005 has no schema changes (no new columns or tables) — no schema cache reload needed.
 
 ## Key Invariants
 
@@ -451,7 +454,31 @@ Every milestone should include a mobile pass before it is considered complete.
 - Insight cards: stack vertically on mobile (text above, "Open entry" button below).
 - Journal textarea: shorter minimum height on mobile (240 px vs 360 px) to avoid excessive empty space.
 
+## Security
+
+### Database function hardening (migration 005)
+
+All `SECURITY DEFINER` functions now include `SET search_path = ''`, which prevents a class of search-path injection attacks where a user-controlled schema could shadow built-in objects.
+
+Two RPCs had a **data-access vulnerability** fixed in migration 005:
+
+- **`get_heatmap`** — accepted any `p_user_id` UUID with no ownership check. An authenticated user could have called `/rest/v1/rpc/get_heatmap` with another user's UUID and read their full year of mood data.
+- **`get_memories`** — same pattern. An authenticated user could have read another user's "On This Day" journal snippets.
+
+Both functions now raise `Unauthorized` unless `p_user_id = auth.uid()`.
+
+### Intentional security decisions
+
+- **`waitlist` INSERT `WITH CHECK (true)`** — intentional. The waitlist is a pre-auth signup form. Anonymous users must be able to submit their email. The `UNIQUE` constraint on `waitlist.email` prevents spam duplicates. Row-level data is non-sensitive (email + optional reason text). No change needed.
+- **`auth_leaked_password_protection` disabled** — not applicable. UnSaid uses magic-link / email OTP exclusively. There are no passwords to check against HaveIBeenPwned.
+
 ## Changelog
+
+### Security hardening (migration 005, 2026-07-03)
+
+- Fixed mutable `search_path` on all five DB functions (`set_updated_at`, `handle_new_user`, `ensure_profile`, `get_heatmap`, `get_memories`).
+- Added ownership guards (`p_user_id = auth.uid()`) to `get_heatmap` and `get_memories` — previously any authenticated user could query another user's data by UUID.
+- Revoked `EXECUTE` on internal-only RPCs (`auth_role`, `auth_status`, `handle_new_user`, `ensure_profile`) from the `anon` role.
 
 ### Milestone 1 release candidate polish (2026-07-03)
 
