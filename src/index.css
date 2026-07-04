@@ -919,6 +919,8 @@ a:hover { color: var(--accent-hover); }
   transition: all var(--transition-fast);
   color: var(--text-secondary);
   font-family: var(--font-sans);
+  /* Minimum touch target — 44px for accessibility */
+  min-height: 44px;
 }
 .mood-btn:hover {
   border-color: var(--border-light);
@@ -937,7 +939,7 @@ a:hover { color: var(--accent-hover); }
 /* ─── Journal Textarea / Lexical container ────────────────── */
 .journal-textarea {
   width: 100%;
-  min-height: 420px;
+  min-height: 360px;
   background: transparent;
   border: none;
   border-top: 1px solid var(--border);
@@ -1026,12 +1028,27 @@ a:hover { color: var(--accent-hover); }
 }
 .tag-remove:hover { opacity: 1; }
 
+/* ─── History reflection badge ───────────────────────────────── */
+/* Small ✦ + top-emotion label shown on HistoryPage for reflected entries */
+.history-reflection-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72rem;
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--accent-dim);
+  border: 1px solid rgba(201, 168, 122, 0.18);
+  font-weight: 500;
+}
+
 /* ─── Insights ─────────────────────────────────────────────── */
 .insights-grid { display: flex; flex-direction: column; gap: var(--space-md); }
 
 .insight-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-md);
   padding: var(--space-md) var(--space-lg);
   background: var(--bg-card);
@@ -1136,6 +1153,120 @@ a:hover { color: var(--accent-hover); }
   font-size: 0.78rem;
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* ─── Reflection Card ────────────────────────────────────────── */
+.reflection-card {
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.reflection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.reflection-header-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.reflection-header-time {
+  font-size: 0.73rem;
+  color: var(--text-muted);
+}
+
+.reflection-summary {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.reflection-emotions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs, 0.25rem);
+}
+
+.reflection-emotion-pill {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 9999px);
+  font-weight: 500;
+}
+.reflection-emotion-pill.positive {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--success);
+}
+.reflection-emotion-pill.negative {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--danger);
+}
+.reflection-emotion-pill.neutral {
+  background: rgba(86, 83, 79, 0.25);
+  color: var(--text-muted);
+}
+
+.reflection-themes {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.reflection-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-xs, 0.25rem) 0;
+}
+
+/* Wrapper keeps question text + hint in a flex column */
+.reflection-question-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.reflection-question {
+  font-size: 0.88rem;
+  font-style: italic;
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin: 0;
+  line-height: 1.5;
+  /* Minimum touch target on mobile */
+  padding: var(--space-xs) 0;
+}
+.reflection-question:hover {
+  color: var(--accent);
+}
+.reflection-question:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-xs);
+}
+
+.reflection-question-hint {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-style: normal;
+  /* Hide on mobile — the question itself gets a tap affordance from title attr */
+  letter-spacing: 0.03em;
+}
+
+.reflection-richer-notice {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: var(--space-xs, 0.25rem);
 }
 
 /* AI Menu popover */
@@ -1421,6 +1552,35 @@ a:hover { color: var(--accent-hover); }
   color: var(--text-secondary);
 }
 
+.settings-subsection-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: var(--space-lg);
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-error-banner {
+  padding: var(--space-md) var(--space-lg);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  margin-top: var(--space-md);
+}
+.settings-error-banner strong { color: var(--danger); }
+.settings-error-banner code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.78rem;
+  background: var(--bg-card);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
 /* ─── Empty States ─────────────────────────────────────────── */
 .empty-state {
   display: flex;
@@ -1454,14 +1614,57 @@ a:hover { color: var(--accent-hover); }
   .app-nav { display: none; }
   .app-main { padding: var(--space-lg) var(--space-md); }
 
+  /* ── Dashboard ── */
   .dashboard-greeting h1 { font-size: 1.7rem; }
   .stats-grid { grid-template-columns: 1fr 1fr; gap: var(--space-sm); }
   .stat-card { padding: var(--space-md); }
   .stat-value { font-size: 1.9rem; }
 
-  .mood-options { flex-wrap: wrap; }
-  .journal-textarea { font-size: 1.05rem; }
+  /* ── Journal Editor ── */
 
+  /* Mood picker: 5 buttons in a single equal-width row on all mobile widths.
+     grid is more reliable than flex-wrap here — prevents the orphaned 5th button. */
+  .mood-options {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--space-xs);
+  }
+  .mood-btn {
+    padding: var(--space-xs) var(--space-2xs);
+    min-height: 56px;
+  }
+  .mood-emoji { font-size: 1.15rem; }
+  .mood-text  { font-size: 0.55rem; }
+
+  /* Textarea: shorter minimum height so the page doesn't feel empty on small screens */
+  .journal-textarea {
+    min-height: 240px;
+    font-size: 1.05rem;
+  }
+
+  /* Reflection card: ensure header row wraps gracefully */
+  .reflection-header {
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+
+  /* AI panel buttons full-width on mobile for easier touch */
+  .ai-menu-wrapper { width: 100%; }
+  .analyze-btn { width: 100%; justify-content: center; }
+
+  /* Reflection question hint: hide on mobile — redundant with title attr on touch */
+  .reflection-question-hint { display: none; }
+
+  /* ── Insight cards ── */
+  /* On mobile, stack card content vertically — button goes below text */
+  .insight-card {
+    flex-direction: column;
+    align-items: stretch;
+    padding: var(--space-md);
+  }
+  .insight-card .btn-ghost { align-self: flex-start; margin-top: var(--space-xs); }
+
+  /* ── History ── */
   .entry-card { grid-template-columns: 1fr; }
   .entry-card-date-col {
     flex-direction: row;
@@ -1475,6 +1678,10 @@ a:hover { color: var(--accent-hover); }
   }
   .entry-card-day { font-size: 1.1rem; }
 
+  /* ── Auth / Settings ── */
   .auth-logo { font-size: 2.4rem; }
   .theme-toggle-group { flex-direction: column; }
+
+  /* Settings token form: stack button row vertically if needed */
+  .settings-token-form .btn-primary { width: 100%; }
 }

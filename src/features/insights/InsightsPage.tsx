@@ -13,8 +13,8 @@ import { useNavigate } from 'react-router-dom';
 import { useInsights, formatReflectedAt } from './hooks';
 import { useSettings } from '../settings/hooks';
 import { useEntries } from '../journal/hooks';
-import { isSentimentPayload } from '../../entities/insight';
-import type { EntryInsight } from '../../entities/insight';
+import { isSentimentPayload, isReflectionPayload } from '../../entities/insight';
+import type { EntryInsight, ReflectionPayload } from '../../entities/insight';
 import { formatDisplayDate } from '../../shared/utils/dates';
 
 // ─── Sentiment helpers ─────────────────────────────────────
@@ -31,52 +31,155 @@ const SENTIMENT_DOT_COLOR: Record<string, string> = {
   neutral: 'var(--text-muted)',
 };
 
-// ─── SentimentCard ─────────────────────────────────────────
+// ─── Emotion valence helper ────────────────────────────────
+// Note: duplicated from JournalEditor.tsx intentionally —
+// deduplication deferred until a third callsite warrants a shared util.
 
-interface SentimentCardProps {
+const POSITIVE_EMOTIONS = new Set(['joy', 'surprise']);
+const NEGATIVE_EMOTIONS = new Set(['anger', 'disgust', 'fear', 'sadness']);
+
+function getEmotionValence(label: string): 'positive' | 'negative' | 'neutral' {
+  const l = label.toLowerCase();
+  if (POSITIVE_EMOTIONS.has(l)) return 'positive';
+  if (NEGATIVE_EMOTIONS.has(l)) return 'negative';
+  return 'neutral';
+}
+
+// ─── InsightCard — handles both reflection and sentiment types ──
+
+interface InsightCardProps {
   insight: EntryInsight;
   entryDate: string | undefined;
 }
 
-function SentimentCard({ insight, entryDate }: SentimentCardProps) {
+function InsightCard({ insight, entryDate }: InsightCardProps) {
   const navigate = useNavigate();
-  const s = isSentimentPayload(insight.payload) ? insight.payload : null;
-  if (!s) return null;
 
-  const pct = Math.round(s.confidence * 100);
+  // ── Reflection insight ──────────────────────────────────
+  if (isReflectionPayload(insight.payload)) {
+    const r = insight.payload as ReflectionPayload;
+    const truncated =
+      r.summary.length > 120 ? r.summary.slice(0, 120) + '…' : r.summary;
+    const topTwo = [...r.emotions].sort((a, b) => b.score - a.score).slice(0, 2);
 
-  return (
-    <div className="insight-card">
-      <div style={{ flex: 1 }}>
-        {entryDate && (
-          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>
-            {formatDisplayDate(entryDate)}
+    return (
+      <div className="insight-card">
+        <div style={{ flex: 1 }}>
+          {entryDate && (
+            <div
+              style={{
+                fontSize: '0.78rem',
+                color: 'var(--text-secondary)',
+                marginBottom: '0.4rem',
+                fontWeight: 500,
+              }}
+            >
+              {formatDisplayDate(entryDate)}
+            </div>
+          )}
+          <p
+            style={{
+              fontSize: '0.85rem',
+              color: 'var(--text-secondary)',
+              margin: '0 0 0.4rem',
+              lineHeight: 1.55,
+            }}
+          >
+            {truncated}
+          </p>
+          <div
+            style={{
+              display: 'flex',
+              gap: 'var(--space-xs)',
+              flexWrap: 'wrap',
+              marginBottom: '0.3rem',
+            }}
+          >
+            {topTwo.map((e) => {
+              const label =
+                e.label.charAt(0).toUpperCase() +
+                e.label.slice(1).toLowerCase();
+              return (
+                <span
+                  key={e.label}
+                  className={`reflection-emotion-pill ${getEmotionValence(e.label)}`}
+                >
+                  {label}
+                </span>
+              );
+            })}
           </div>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}>
-          <span className={`sentiment-pill sentiment-${s.label}`}>
-            {SENTIMENT_EMOJI[s.label]}{' '}
-            {s.label.charAt(0).toUpperCase() + s.label.slice(1)}
-          </span>
-          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-            {pct}% confidence
-          </span>
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)' }}>
             {formatReflectedAt(insight.createdAt)}
           </span>
         </div>
+        {entryDate && (
+          <button
+            type="button"
+            className="btn-ghost btn-sm"
+            onClick={() => navigate(`/journal/${entryDate}`)}
+          >
+            Open entry →
+          </button>
+        )}
       </div>
-      {entryDate && (
-        <button
-          type="button"
-          className="btn-ghost btn-sm"
-          onClick={() => navigate(`/journal/${entryDate}`)}
-        >
-          Open entry →
-        </button>
-      )}
-    </div>
-  );
+    );
+  }
+
+  // ── Legacy sentiment insight (unchanged rendering) ──────
+  if (isSentimentPayload(insight.payload)) {
+    const s = insight.payload;
+    const pct = Math.round(s.confidence * 100);
+
+    return (
+      <div className="insight-card">
+        <div style={{ flex: 1 }}>
+          {entryDate && (
+            <div
+              style={{
+                fontSize: '0.78rem',
+                color: 'var(--text-secondary)',
+                marginBottom: '0.4rem',
+                fontWeight: 500,
+              }}
+            >
+              {formatDisplayDate(entryDate)}
+            </div>
+          )}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-sm)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <span className={`sentiment-pill sentiment-${s.label}`}>
+              {SENTIMENT_EMOJI[s.label]}{' '}
+              {s.label.charAt(0).toUpperCase() + s.label.slice(1)}
+            </span>
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+              {pct}% confidence
+            </span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {formatReflectedAt(insight.createdAt)}
+            </span>
+          </div>
+        </div>
+        {entryDate && (
+          <button
+            type="button"
+            className="btn-ghost btn-sm"
+            onClick={() => navigate(`/journal/${entryDate}`)}
+          >
+            Open entry →
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // ─── Page ──────────────────────────────────────────────────
@@ -106,7 +209,35 @@ export default function InsightsPage() {
     );
   }
 
-  // Filter to sentiment insights with valid payloads
+  // Collect all displayable insights, deduplicating by entryId.
+  // When both a reflection and a sentiment row exist for the same entry
+  // (user reflected with HF-only first, then with Groq later), prefer
+  // the reflection insight so only one card renders per entry.
+  const allInsights = (() => {
+    const byEntry = new Map<string | null, EntryInsight>();
+    // insights is already sorted createdAt DESC; iterate to build a
+    // per-entry best-insight map — reflection always beats sentiment.
+    for (const i of (insights ?? [])) {
+      const isReflection = i.type === 'reflection' && isReflectionPayload(i.payload);
+      const isSentiment = i.type === 'sentiment' && isSentimentPayload(i.payload);
+      if (!isReflection && !isSentiment) continue;
+
+      const key = i.entryId; // null for user-level insights
+      const existing = byEntry.get(key);
+      if (!existing) {
+        byEntry.set(key, i);
+      } else if (existing.type !== 'reflection' && isReflection) {
+        // Upgrade: replace a sentiment entry with a reflection entry
+        byEntry.set(key, i);
+      }
+      // existing reflection is never downgraded to sentiment
+    }
+    return Array.from(byEntry.values()).sort(
+      (a, b) => b.createdAt.localeCompare(a.createdAt),
+    );
+  })();
+
+  // Legacy sentinel insights only — for the empty state check
   const sentimentInsights = (insights ?? []).filter(
     (i) => i.type === 'sentiment' && isSentimentPayload(i.payload),
   );
@@ -158,7 +289,7 @@ export default function InsightsPage() {
   }
 
   // ── State C: AI configured, nothing reflected yet ───────
-  if (sentimentInsights.length === 0) {
+  if (allInsights.length === 0) {
     return (
       <div className="page insights-page">
         <h1>Insights</h1>
@@ -183,13 +314,36 @@ export default function InsightsPage() {
 
   // ── State D: dashboard ──────────────────────────────────
 
-  // Mood distribution counts
+  // Mood distribution counts — aggregates both reflection and sentiment insights.
   const counts = { positive: 0, neutral: 0, negative: 0 };
+
+  // Sentiment insights: use stored label directly
   sentimentInsights.forEach((i) => {
     const s = isSentimentPayload(i.payload) ? i.payload : null;
     if (s) counts[s.label]++;
   });
-  const total = sentimentInsights.length;
+
+  // Reflection insights: derive dominant valence from emotion scores
+  const reflectionInsightsAll = (insights ?? []).filter(
+    (i) => i.type === 'reflection' && isReflectionPayload(i.payload),
+  );
+  for (const i of reflectionInsightsAll) {
+    const payload = i.payload as unknown as ReflectionPayload;
+    const pos = payload.emotions
+      .filter((e) => POSITIVE_EMOTIONS.has(e.label.toLowerCase()))
+      .reduce((s, e) => s + e.score, 0);
+    const neg = payload.emotions
+      .filter((e) => NEGATIVE_EMOTIONS.has(e.label.toLowerCase()))
+      .reduce((s, e) => s + e.score, 0);
+    const neu = payload.emotions
+      .filter((e) => e.label.toLowerCase() === 'neutral')
+      .reduce((s, e) => s + e.score, 0);
+    if (pos >= neg && pos >= neu) counts.positive++;
+    else if (neg >= pos && neg >= neu) counts.negative++;
+    else counts.neutral++;
+  }
+
+  const total = counts.positive + counts.neutral + counts.negative;
 
   return (
     <div className="page insights-page">
@@ -197,8 +351,17 @@ export default function InsightsPage() {
       <p className="page-subtitle">Emotional patterns from your writing.</p>
 
       {/* ── Mood distribution bar ─────────────────────── */}
-      <section style={{ marginBottom: 'var(--space-2xl)' }}>
-        <h2 style={{ fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: 'var(--space-sm)', fontWeight: 600 }}>
+      <section style={{ marginTop: 'var(--space-xl)', marginBottom: 'var(--space-2xl)' }}>
+        <h2
+          style={{
+            fontSize: '0.82rem',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            color: 'var(--text-muted)',
+            marginBottom: 'var(--space-sm)',
+            fontWeight: 600,
+          }}
+        >
           Mood overview
         </h2>
 
@@ -232,12 +395,21 @@ export default function InsightsPage() {
 
       {/* ── Recent reflections ────────────────────────── */}
       <section>
-        <h2 style={{ fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: 'var(--space-md)', fontWeight: 600 }}>
+        <h2
+          style={{
+            fontSize: '0.82rem',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            color: 'var(--text-muted)',
+            marginBottom: 'var(--space-md)',
+            fontWeight: 600,
+          }}
+        >
           Recent reflections
         </h2>
         <div className="insights-grid">
-          {sentimentInsights.map((insight) => (
-            <SentimentCard
+          {allInsights.map((insight) => (
+            <InsightCard
               key={insight.id}
               insight={insight}
               entryDate={insight.entryId ? entriesById.get(insight.entryId) : undefined}

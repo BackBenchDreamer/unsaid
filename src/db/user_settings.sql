@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS public.user_settings (
                         CHECK (theme IN ('dark', 'light')),
   hf_token_encrypted    TEXT,           -- AES-GCM ciphertext; null until user saves a token
   hf_model              TEXT NOT NULL DEFAULT 'j-hartmann/emotion-english-distilroberta-base',
+  groq_token_encrypted  TEXT,           -- AES-GCM ciphertext of Groq API key; null until configured
+  groq_model            TEXT DEFAULT 'llama-3.1-8b-instant',  -- Groq model for reflection generation
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -45,7 +47,9 @@ BEGIN
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql
+   SECURITY DEFINER
+   SET search_path = '';
 
 -- ─── Backfill settings rows for any existing profiles ───────
 -- Safe to run even if no profiles exist yet.

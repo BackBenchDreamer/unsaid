@@ -54,3 +54,33 @@ export function useSaveHFToken() {
     },
   });
 }
+
+export function useSaveGroqToken() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  return useMutation({
+    mutationFn: (plainToken: string) => {
+      if (!user) throw new Error('Not authenticated');
+      return settingsService.saveGroqToken(plainToken);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: settingsKeys.user(user?.id ?? '') });
+    },
+  });
+}
+
+export function useUpdateGroqModel() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  return useMutation({
+    mutationFn: (model: string) => {
+      if (!user) throw new Error('Not authenticated');
+      return settingsService.updateGroqModel(user.id, model);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: settingsKeys.user(user?.id ?? '') });
+    },
+  });
+}

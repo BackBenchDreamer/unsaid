@@ -75,16 +75,25 @@ CREATE INDEX IF NOT EXISTS idx_waitlist_status ON public.waitlist(status);
 --   4. Update dashboard queries to aggregate latest per (entry_id, type)
 -- This is a schema migration, not an app-only change.
 CREATE TABLE IF NOT EXISTS public.insights (
-  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  entry_id    UUID REFERENCES public.entries(id) ON DELETE CASCADE,
-  type        TEXT NOT NULL CHECK (type IN ('sentiment', 'summary', 'pattern')),
-  payload     JSONB NOT NULL DEFAULT '{}',
-  source_hash TEXT,           -- SHA-256 of sourceEnvelope(content, promptVersion, model)
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id      UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  entry_id     UUID REFERENCES public.entries(id) ON DELETE CASCADE,
+  type         TEXT NOT NULL,
+  payload      JSONB NOT NULL DEFAULT '{}',
+  source_hash  TEXT,           -- SHA-256 of sourceEnvelope(content, promptVersion, model)
+  period_start DATE,           -- Weekly/monthly summary window start (Milestone 2+); NULL for entry insights
+  period_end   DATE,           -- Weekly/monthly summary window end (Milestone 2+); NULL for entry insights
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ DEFAULT now(),  -- set explicitly on every upsert
+
+  -- Named constraint so it can be dropped/replaced without querying pg_constraint.
+  CONSTRAINT insights_type_check CHECK (type IN ('sentiment', 'summary', 'pattern', 'reflection')),
 
   -- Enables idempotent upsert ON CONFLICT (user_id, entry_id, type).
   -- Drop before implementing reflection versioning (see note above).
+  -- NOTE: This constraint does NOT enforce uniqueness when entry_id IS NULL
+  -- (Postgres treats NULLs as distinct). Weekly/monthly summary rows (entry_id IS NULL)
+  -- require a separate partial unique index — see migration 003 for the index definition.
   CONSTRAINT uq_insight_entry_type UNIQUE (user_id, entry_id, type)
 );
 
@@ -97,7 +106,8 @@ BEGIN
   NEW.updated_at = now();
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+   SET search_path = '';
 
 CREATE TRIGGER trg_entries_updated_at
   BEFORE UPDATE ON public.entries
@@ -127,7 +137,9 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql
+   SECURITY DEFINER
+   SET search_path = '';
 
 -- Idempotent trigger creation: drop-and-recreate is the cleanest pattern
 -- for UPDATE triggers (IF NOT EXISTS only works for CREATE TRIGGER on PG 14+
@@ -177,16 +189,23 @@ BEGIN
   VALUES (v_user_id)
   ON CONFLICT (user_id) DO NOTHING;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql
+   SECURITY DEFINER
+   SET search_path = '';
 
 -- ─── RPC: Heatmap data ────────────────────────────────────
 CREATE OR REPLACE FUNCTION public.get_heatmap(
-  p_user_id UUID,
+  p_user_id    UUID,
   p_start_date DATE,
-  p_end_date DATE
+  p_end_date   DATE
 )
 RETURNS TABLE(date DATE, has_entry BOOLEAN, mood TEXT) AS $$
 BEGIN
+  -- Ownership guard: the requesting user must own the data.
+  IF auth.uid() IS NULL OR p_user_id <> auth.uid() THEN
+    RAISE EXCEPTION 'Unauthorized';
+  END IF;
+
   RETURN QUERY
   SELECT
     d::DATE AS date,
@@ -203,15 +222,22 @@ BEGIN
     ) AS mood
   FROM generate_series(p_start_date, p_end_date, '1 day'::INTERVAL) d;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql
+   SECURITY DEFINER
+   SET search_path = '';
 
 -- ─── RPC: Memories ("on this day") ────────────────────────
 CREATE OR REPLACE FUNCTION public.get_memories(
   p_user_id UUID,
-  p_today DATE
+  p_today   DATE
 )
 RETURNS TABLE(id UUID, entry_date DATE, snippet TEXT, mood TEXT, days_ago INT) AS $$
 BEGIN
+  -- Ownership guard: the requesting user must own the data.
+  IF auth.uid() IS NULL OR p_user_id <> auth.uid() THEN
+    RAISE EXCEPTION 'Unauthorized';
+  END IF;
+
   RETURN QUERY
   SELECT
     e.id,
@@ -227,4 +253,6 @@ BEGIN
   ORDER BY e.entry_date DESC
   LIMIT 10;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql
+   SECURITY DEFINER
+   SET search_path = '';
