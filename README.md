@@ -6,7 +6,7 @@ UnSaid is an invite-only personal journaling app with offline-first sync, mood t
 
 > **AI pipeline status (as of 2026-07-03):** fully operational and end-to-end verified. See [AI Insights](#ai-insights) for operational notes.
 
-> **Milestone 2 (Patterns Over Time) branch:** `feature/patterns-over-time` — see [Changelog](#changelog) for what changed.
+> **Milestone 3 (Memory Before Intelligence) branch:** `feature/memory-before-intelligence` — see [Changelog](#changelog) for what changed.
 
 ## Features
 
@@ -280,9 +280,10 @@ Weekly reflection builds on per-entry reflections to answer "What has my recent 
 - Only the staleness notice + Regenerate appear when stale — never a Regenerate button on a fresh reflection.
 
 **Independent versioning:**
-- Per-entry reflection: `promptVersion = '2.1.0'`.
+- Per-entry reflection: `promptVersion = '3.0.0'` (M3 bump — context injection added).
 - Weekly reflection: `weeklyPromptVersion = '1.0.0'` (independent; stored in `_meta`).
 - Bumping either version invalidates only the relevant insight type's caches.
+- **Prompt version bumps are architectural events** — only bump when the reflection output is structurally different (e.g., context injection added). Do not bump for wording adjustments.
 
 **Insights dashboard — section order:**
 1. **This week** — weekly narrative (or invitation, or subtle hint when not enough entries)
@@ -539,6 +540,7 @@ Run in order in the Supabase SQL Editor (Dashboard → SQL Editor → New query 
 | `src/db/migrations/004_groq_provider_settings.sql` | Add `groq_token_encrypted`, `groq_model` columns to `user_settings` | **Settings page + Groq** |
 | `src/db/migrations/005_security_hardening.sql` | Fix `search_path` on all DB functions; add ownership guards to `get_heatmap` + `get_memories`; revoke anon access to internal RPCs | **Security** |
 | `src/db/migrations/006_weekly_summary_index.sql` | Create partial unique index `uq_insight_summary_period` on `(user_id, type, period_start, period_end) WHERE entry_id IS NULL` | **Weekly reflection (M2)** |
+| `src/db/migrations/007_memory_tables.sql` | Add `life_chapters`, `chapter_entries`, `context_memory`, `memory_extractions` tables + RLS | **Memory (M3)** |
 
 After running migration 004, if settings still fail to load, reload the PostgREST schema cache:
 **Supabase Dashboard → Settings → API → Reload Schema**
@@ -590,6 +592,53 @@ Both functions now raise `Unauthorized` unless `p_user_id = auth.uid()`.
 - **`auth_leaked_password_protection` disabled** — not applicable. UnSaid uses magic-link / email OTP exclusively. There are no passwords to check against HaveIBeenPwned.
 
 ## Changelog
+
+### Milestone 3 — Memory Before Intelligence (feature/memory-before-intelligence)
+
+This milestone builds the memory foundation that every future intelligence feature depends on. It does not add visible AI features for users.
+
+**Philosophy:** Memory should exist before intelligence. The AI first builds a reliable memory of a person's life. Only then should it draw conclusions. Memory is not a collection of facts — it is a collection of moments worth remembering.
+
+**Two memory types:**
+- **Context Memory** (`context_memory` table) — recurring entities (people, places, projects, topics) extracted from reflected entries. Used internally to enrich future reflections. Users may never interact with it directly.
+- **Life Chapters** (`life_chapters` table) — meaningful collections of related journal entries representing distinct life episodes (e.g. "IBM Internship", "Thailand Trip"). Discovered automatically; never created by the user.
+
+**Memory is conservative:**
+- A chapter candidate requires ≥ 3 entries passing ≥ 2 of: entity co-occurrence, theme overlap (temporal proximity is a prerequisite filter, not a signal)
+- Promotion from `forming` → `active` requires ALL three: sufficient evidence, stability over time (≥ 7 quiet days), no theme drift (≥ 50% overlap with original themes)
+- A chapter becomes `dormant` after 60 days with no new linked entries
+
+**Memory is quiet:**
+- No new UI in this milestone — the memory layer is invisible to users
+- `extract-memory` Edge Function runs asynchronously (fire-and-forget) after every reflection — the user never waits for it
+- Errors in memory extraction have no user-facing effect
+
+**Memory reduces AI cost:**
+- `generate-reflection` now queries `context_memory` and `life_chapters` before calling Groq
+- Relevant context (scored by overlap with current entry themes, not recency/frequency) is injected into the Groq system prompt as a compact block (≤ 500 tokens)
+- Context injection triggers a `source_hash` change, inviting re-reflection when memory changes significantly
+
+**Architecture changes:**
+- New Edge Function: `supabase/functions/extract-memory/` — multi-signal chapter detection, entity extraction, dormancy sweep
+- New DB migration: `src/db/migrations/007_memory_tables.sql` — four new tables
+- New entities: `src/entities/memory.ts` — all domain types, mappers, constants
+- New service: `src/services/memoryService.ts` — read-only queries + ContextBlock builder
+- New feature hooks: `src/features/memory/hooks.ts` — `useLifeChapters`, `useContextMemory`, `useActiveChapterCount`
+- `AI_CONFIG.promptVersion` bumped from `'2.1.0'` → `'3.0.0'` — existing per-entry cached reflections will show "Re-reflect" (intentional; context-aware reflections are meaningfully better)
+
+**Required deployment steps:**
+1. Apply `src/db/migrations/007_memory_tables.sql` in Supabase SQL Editor.
+2. Deploy: `supabase functions deploy extract-memory`.
+3. Redeploy: `supabase functions deploy generate-reflection` (context injection + extract-memory fire-and-forget added).
+4. No schema cache reload required.
+
+**New invariants (see AGENTS.md):**
+- Memory tables are service_role-only writes
+- `memory_extractions` is the idempotency guard for `extract-memory`
+- Prompt version bumps are architectural events, not routine edits
+- Memory tables are append-only wherever possible
+
+---
 
 ### Milestone 2.5 — Product Polish & Architectural Refinement (feature/patterns-over-time)
 
