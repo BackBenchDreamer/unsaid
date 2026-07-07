@@ -4,25 +4,14 @@
 
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { format, parseISO, getMonth } from 'date-fns';
+import { format } from 'date-fns';
 import { useAuth } from '../../app/providers/AuthProvider';
 import { useEntryDates, useHeatmap, useMemories } from '../journal/hooks';
+import { buildActivityCalendarModel } from '../../entities/activityCalendar';
 import { computeStreak } from '../../entities/streak';
-import { getTodayLocal, getCurrentYearRange, formatDisplayDate } from '../../shared/utils/dates';
-import { MOOD_COLORS, MOOD_EMOJIS } from '../../shared/constants';
-
-const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const DAY_LABELS = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
-
-function getDayOfWeekMonday(dateStr: string): number {
-  // 0 = Mon, 6 = Sun
-  const d = parseISO(dateStr).getDay();
-  return d === 0 ? 6 : d - 1;
-}
-
-interface HeatmapWeek {
-  cells: Array<{ date: string; count: number; mood: string | null } | null>;
-}
+import { getTodayLocal, getCurrentYearRange } from '../../shared/utils/dates';
+import { MOOD_EMOJIS } from '../../shared/constants';
+import { ActivityHeatmap } from './ActivityHeatmap';
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -36,43 +25,19 @@ export default function DashboardPage() {
 
   const streak = entryDates ? computeStreak(entryDates, todayLocal) : null;
 
-  // Build week-column grid (GitHub style, Monday-first)
-  const { weeks, monthPositions } = useMemo(() => {
-    if (!heatmapData || heatmapData.length === 0) return { weeks: [], monthPositions: [] };
-
-    const firstDayOfWeek = getDayOfWeekMonday(start); // offset for first week padding
-
-    // Build all weeks
-    const allWeeks: HeatmapWeek[] = [];
-    let currentWeek: HeatmapWeek = { cells: Array(7).fill(null) };
-    let dayIndex = firstDayOfWeek;
-
-    for (const cell of heatmapData) {
-      currentWeek.cells[dayIndex] = cell;
-      dayIndex++;
-      if (dayIndex === 7) {
-        allWeeks.push(currentWeek);
-        currentWeek = { cells: Array(7).fill(null) };
-        dayIndex = 0;
-      }
-    }
-    if (dayIndex > 0) allWeeks.push(currentWeek);
-
-    // Month label positions (week index of first occurrence of each month)
-    const seenMonths = new Set<number>();
-    const monthPos: Array<{ month: number; weekIdx: number }> = [];
-    heatmapData.forEach((cell, i) => {
-      const d = parseISO(cell.date);
-      const m = getMonth(d);
-      const weekIdx = Math.floor((firstDayOfWeek + i) / 7);
-      if (!seenMonths.has(m)) {
-        seenMonths.add(m);
-        monthPos.push({ month: m, weekIdx });
-      }
+  const calendarModel = useMemo(() => {
+    return buildActivityCalendarModel({
+      startDate: start,
+      endDate: end,
+      todayDate: todayLocal,
+      weekStartsOn: 1,
+      days: (heatmapData ?? []).map((cell) => ({
+        date: cell.date,
+        hasEntry: cell.count > 0,
+        mood: cell.mood,
+      })),
     });
-
-    return { weeks: allWeeks, monthPositions: monthPos };
-  }, [heatmapData, start]);
+  }, [end, heatmapData, start, todayLocal]);
 
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
@@ -82,11 +47,10 @@ export default function DashboardPage() {
   }, []);
 
   const dayOfWeek = format(new Date(), 'EEEE');
-  const displayDate = formatDisplayDate(todayLocal);
+  const displayDate = format(new Date(), 'MMMM d, yyyy');
 
   return (
     <div className="page dashboard-page">
-      {/* Greeting */}
       <div className="dashboard-greeting">
         <h1>
           {greeting}{user?.displayName ? `, ${user.displayName}` : ''}
@@ -96,7 +60,6 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {/* CTA */}
       <div className="dashboard-cta">
         <button
           className="btn-primary"
@@ -106,7 +69,6 @@ export default function DashboardPage() {
         </button>
       </div>
 
-      {/* Streak stats */}
       {streak && (
         <div className="stats-grid">
           <div className="stat-card">
@@ -124,71 +86,15 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Heatmap — GitHub-style week grid */}
-      {weeks.length > 0 && (
+      {calendarModel.weeks.length > 0 && (
         <div className="heatmap-section">
-          <h2>This year</h2>
-          <div className="heatmap-container">
-            <div className="heatmap-graph">
-              {/* Month labels */}
-              <div className="heatmap-months">
-                {monthPositions.map(({ month, weekIdx }) => (
-                  <span
-                    key={month}
-                    className="heatmap-month-label"
-                    style={{ marginLeft: weekIdx === 0 ? 0 : undefined }}
-                  >
-                    {MONTH_LABELS[month]}
-                  </span>
-                ))}
-              </div>
-
-              <div className="heatmap-body">
-                {/* Day-of-week labels */}
-                <div className="heatmap-day-labels">
-                  {DAY_LABELS.map((label, i) => (
-                    <span key={i} className="heatmap-day-label">{label}</span>
-                  ))}
-                </div>
-
-                {/* Week columns */}
-                <div className="heatmap-weeks">
-                  {weeks.map((week, wi) => (
-                    <div key={wi} className="heatmap-week">
-                      {week.cells.map((cell, di) => {
-                        if (!cell) {
-                          return <div key={di} className="heatmap-cell" style={{ visibility: 'hidden' }} />;
-                        }
-                        const hasEntry = cell.count > 0;
-                        const moodColor = hasEntry && cell.mood ? MOOD_COLORS[cell.mood] : undefined;
-                        return (
-                          <div
-                            key={di}
-                            className={`heatmap-cell ${hasEntry ? 'heatmap-filled' : 'heatmap-empty'}`}
-                            style={moodColor ? { backgroundColor: moodColor, opacity: 0.7 } : undefined}
-                            title={`${cell.date}${cell.mood ? ` · ${cell.mood}` : ''}${hasEntry ? ' ✓' : ''}`}
-                            onClick={() => hasEntry && navigate(`/journal/${cell.date}`)}
-                            role={hasEntry ? 'button' : undefined}
-                            aria-label={hasEntry ? `View entry for ${cell.date}` : undefined}
-                            tabIndex={hasEntry ? 0 : undefined}
-                            onKeyDown={(e) => {
-                              if (hasEntry && (e.key === 'Enter' || e.key === ' ')) {
-                                navigate(`/journal/${cell.date}`);
-                              }
-                            }}
-                          />
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <ActivityHeatmap
+            model={calendarModel}
+            onSelectDate={(date) => navigate(`/journal/${date}`)}
+          />
         </div>
       )}
 
-      {/* On This Day */}
       {memories && memories.length > 0 && (
         <div className="memories-section">
           <h2>On this day</h2>
