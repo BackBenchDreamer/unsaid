@@ -10,10 +10,14 @@
 -- functions that bypass RLS and are safe to call from within policies.
 -- ============================================================
 
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.entries  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.waitlist ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.insights ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.entries           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.waitlist          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.insights          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.life_chapters     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chapter_entries   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.context_memory    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.memory_extractions ENABLE ROW LEVEL SECURITY;
 
 -- ─── RLS helper functions ───────────────────────────────────
 -- These are SECURITY DEFINER so they run as the function owner (postgres),
@@ -134,3 +138,46 @@ CREATE POLICY "Users can read own insights"
 
 -- Only service_role (Edge Functions) can insert insights.
 -- No INSERT policy = only service_role can write.
+
+-- ─── Memory Tables (Milestone 3) ───────────────────────────
+-- All four memory tables follow the same pattern as insights:
+--   - Approved users can SELECT their own rows
+--   - No INSERT/UPDATE/DELETE policy = only service_role (Edge Functions) can write
+-- This is intentional: memory is built entirely by the extract-memory Edge Function,
+-- never mutated directly by the client.
+
+DROP POLICY IF EXISTS "Approved users can read own life chapters" ON public.life_chapters;
+CREATE POLICY "Approved users can read own life chapters"
+  ON public.life_chapters FOR SELECT
+  USING (
+    auth.uid() = user_id
+    AND public.auth_status() = 'approved'
+  );
+
+DROP POLICY IF EXISTS "Approved users can read own chapter entries" ON public.chapter_entries;
+CREATE POLICY "Approved users can read own chapter entries"
+  ON public.chapter_entries FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.life_chapters lc
+      WHERE lc.id = chapter_entries.chapter_id
+        AND lc.user_id = auth.uid()
+        AND public.auth_status() = 'approved'
+    )
+  );
+
+DROP POLICY IF EXISTS "Approved users can read own context memory" ON public.context_memory;
+CREATE POLICY "Approved users can read own context memory"
+  ON public.context_memory FOR SELECT
+  USING (
+    auth.uid() = user_id
+    AND public.auth_status() = 'approved'
+  );
+
+DROP POLICY IF EXISTS "Approved users can read own memory extractions" ON public.memory_extractions;
+CREATE POLICY "Approved users can read own memory extractions"
+  ON public.memory_extractions FOR SELECT
+  USING (
+    auth.uid() = user_id
+    AND public.auth_status() = 'approved'
+  );

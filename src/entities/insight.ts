@@ -29,7 +29,11 @@
  *   and redeploying the functions.
  */
 export const AI_CONFIG = {
-  promptVersion: '2.1.0',
+  // M3 bump: context memory injection added (Milestone 3 — Memory Before Intelligence).
+  // This is an architectural event: reflections now include relevant context when available.
+  // Existing cached reflections will show isStale = true, inviting users to re-reflect.
+  // Do not bump for wording adjustments — only for structural changes to prompt or output.
+  promptVersion: '3.0.0',
   defaultModel: 'j-hartmann/emotion-english-distilroberta-base',
 } as const;
 

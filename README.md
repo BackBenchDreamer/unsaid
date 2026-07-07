@@ -6,7 +6,7 @@ UnSaid is an invite-only personal journaling app with offline-first sync, mood t
 
 > **AI pipeline status (as of 2026-07-03):** fully operational and end-to-end verified. See [AI Insights](#ai-insights) for operational notes.
 
-> **Milestone 2 (Patterns Over Time) branch:** `feature/patterns-over-time` — see [Changelog](#changelog) for what changed.
+> **Milestone 3 (Memory Before Intelligence) branch:** `feature/memory-before-intelligence` — see [Changelog](#changelog) for what changed.
 
 ## Features
 
@@ -92,6 +92,7 @@ supabase link --project-ref <your-project-ref>
 supabase functions deploy analyze-sentiment
 supabase functions deploy generate-reflection
 supabase functions deploy generate-weekly-summary
+supabase functions deploy extract-memory
 supabase functions deploy encrypt-token
 supabase functions deploy approve-waitlist
 ```
@@ -280,9 +281,10 @@ Weekly reflection builds on per-entry reflections to answer "What has my recent 
 - Only the staleness notice + Regenerate appear when stale — never a Regenerate button on a fresh reflection.
 
 **Independent versioning:**
-- Per-entry reflection: `promptVersion = '2.1.0'`.
+- Per-entry reflection: `promptVersion = '3.0.0'` (M3 bump — context injection added).
 - Weekly reflection: `weeklyPromptVersion = '1.0.0'` (independent; stored in `_meta`).
 - Bumping either version invalidates only the relevant insight type's caches.
+- **Prompt version bumps are architectural events** — only bump when the reflection output is structurally different (e.g., context injection added). Do not bump for wording adjustments.
 
 **Insights dashboard — section order:**
 1. **This week** — weekly narrative (or invitation, or subtle hint when not enough entries)
@@ -353,9 +355,7 @@ Two-provider architecture: HuggingFace for emotion classification, Groq for refl
 - Both tokens are AES-256-GCM encrypted by `encrypt-token` using `APP_ENCRYPTION_KEY`. The plaintext is never stored or returned.
 - The `encrypt-token` Edge Function accepts `provider: 'hf' | 'groq'` (defaults to `'hf'` for backward compatibility) and writes to the corresponding `user_settings` column.
 
-**`AI_CONFIG.promptVersion`:** bumped from `'1.0.0'` → `'2.0.0'` (M1) → `'2.1.0'` (M2, voice fix). Each bump stales all per-entry cached rows — users see "Re-reflect" on their next visit. This is intentional. Stored in `_meta.version` on each row.
-
-**Naming reference:** see [`foundation-of-reflection-plan.md`](foundation-of-reflection-plan.md) for the full naming reference table.
+**`AI_CONFIG.promptVersion`:** bumped from `'1.0.0'` → `'2.0.0'` (M1) → `'2.1.0'` (M2, voice fix) → `'3.0.0'` (M3, context injection added). Each bump stales all per-entry cached rows — users see "Re-reflect" on their next visit. This is intentional. Stored in `_meta.version` on each row.
 
 ### `ReflectionPayload` schema
 
@@ -389,14 +389,18 @@ Stored in `insights.payload` for `type = 'reflection'` rows:
 3. Fetch entry (service role); assert `entry.user_id === user_id`.
 4. Fetch `user_settings` for `hf_token_encrypted`, `hf_model`, `groq_token_encrypted`, `groq_model`.
 5. Guard: if `groq_token_encrypted IS NULL` → return HTTP 422 `REFLECTION_NOT_CONFIGURED`.
-6. Compute `source_hash = SHA-256({ content, promptVersion: '2.0.0', model: groq_model })`.
-7. Cache check: if stored row matches hash **and** passes `isReflectionResult()` → return cached.
-8. Decrypt HF token; call HF emotion model → 7 emotion scores.
-9. Decrypt Groq token; call `https://api.groq.com/openai/v1/chat/completions` with emotion context + entry excerpt.
-10. Parse + validate Groq JSON response with `isReflectionResult()`.
-11. Build `ReflectionPayload` with `_meta.provider = 'groq'`.
-12. Upsert to `insights` with `updated_at = now()`.
-13. Return `{ result, meta: { cached: false, generationMs } }`.
+6. Fetch existing reflection insight from `insights` (for cache validation later).
+7. Decrypt HF token; call HF emotion model → 7 emotion scores.
+8. Extract top-3 emotion labels as theme seeds for context relevance scoring.
+9. Query `context_memory` and `life_chapters` for relevant context (scored by theme overlap with emotion seeds). Build context block (≤ 500 tokens). Non-fatal if unavailable.
+10. Compute `source_hash = SHA-256({ content, promptVersion: '3.0.0', model: groq_model, contextHash? })`. `contextHash` is a SHA-256 of the context block — included when context was retrieved. A changed memory state changes `source_hash`, invalidating the cache and inviting re-reflection.
+11. Cache check: if stored row's `source_hash` matches **and** passes `isReflectionResult()` → return cached.
+12. Decrypt Groq token; call `https://api.groq.com/openai/v1/chat/completions` with emotion scores + entry excerpt. Context block injected into the system prompt when non-empty.
+13. Parse + validate Groq JSON response with `isReflectionResult()`.
+14. Build `ReflectionPayload` with `_meta.provider = 'groq'`, `_meta.version = '3.0.0'`.
+15. Upsert to `insights` with `source_hash` and `updated_at = now()`.
+16. Fire-and-forget `POST /functions/v1/extract-memory` with the user's JWT — extracts entities and scores chapter candidates asynchronously. Client does not wait; errors are logged server-side only.
+17. Return `{ result, meta: { cached: false, generationMs } }`.
 
 The Groq endpoint is hardcoded — no configurable base URL in this milestone.
 
@@ -539,6 +543,8 @@ Run in order in the Supabase SQL Editor (Dashboard → SQL Editor → New query 
 | `src/db/migrations/004_groq_provider_settings.sql` | Add `groq_token_encrypted`, `groq_model` columns to `user_settings` | **Settings page + Groq** |
 | `src/db/migrations/005_security_hardening.sql` | Fix `search_path` on all DB functions; add ownership guards to `get_heatmap` + `get_memories`; revoke anon access to internal RPCs | **Security** |
 | `src/db/migrations/006_weekly_summary_index.sql` | Create partial unique index `uq_insight_summary_period` on `(user_id, type, period_start, period_end) WHERE entry_id IS NULL` | **Weekly reflection (M2)** |
+| `src/db/migrations/007_memory_tables.sql` | Add `life_chapters`, `chapter_entries`, `context_memory`, `memory_extractions` tables + RLS | **Memory (M3)** |
+| `src/db/migrations/008_memory_extraction_version.sql` | Add `extraction_version` column to `memory_extractions` (separate from `prompt_version`) | **Memory (M3 follow-up)** |
 
 After running migration 004, if settings still fail to load, reload the PostgREST schema cache:
 **Supabase Dashboard → Settings → API → Reload Schema**
@@ -590,6 +596,57 @@ Both functions now raise `Unauthorized` unless `p_user_id = auth.uid()`.
 - **`auth_leaked_password_protection` disabled** — not applicable. UnSaid uses magic-link / email OTP exclusively. There are no passwords to check against HaveIBeenPwned.
 
 ## Changelog
+
+### Milestone 3 — Memory Before Intelligence (feature/memory-before-intelligence)
+
+This milestone builds the memory foundation that every future intelligence feature depends on. It does not add visible AI features for users.
+
+**Philosophy:** Memory should exist before intelligence. The AI first builds a reliable memory of a person's life. Only then should it draw conclusions. Memory is not a collection of facts — it is a collection of moments worth remembering.
+
+**Two memory types:**
+- **Context Memory** (`context_memory` table) — recurring entities (people, places, projects, topics) extracted from reflected entries. Used internally to enrich future reflections. Users may never interact with it directly.
+- **Life Chapters** (`life_chapters` table) — meaningful collections of related journal entries representing distinct life episodes (e.g. "IBM Internship", "Thailand Trip"). Discovered automatically; never created by the user.
+
+**Memory is conservative:**
+- A chapter candidate requires ≥ 3 entries passing ≥ 2 of: entity co-occurrence, theme overlap (temporal proximity is a prerequisite filter, not a signal)
+- Promotion from `forming` → `active` requires ALL three: sufficient evidence, stability over time (≥ 7 quiet days), no theme drift (≥ 50% overlap with original themes)
+- A chapter becomes `dormant` after 60 days with no new linked entries
+
+**Memory is quiet:**
+- No new UI in this milestone — the memory layer is invisible to users
+- `extract-memory` Edge Function runs asynchronously (fire-and-forget) after every reflection — the user never waits for it
+- Errors in memory extraction have no user-facing effect
+
+**Memory reduces AI cost:**
+- `generate-reflection` now queries `context_memory` and `life_chapters` before calling Groq
+- Relevant context (scored by overlap with current entry themes, not recency/frequency) is injected into the Groq system prompt as a compact block (≤ 500 tokens)
+- Context injection triggers a `source_hash` change, inviting re-reflection when memory changes significantly
+
+**Architecture changes:**
+- New Edge Function: `supabase/functions/extract-memory/` — multi-signal chapter detection, entity extraction, dormancy sweep
+- New DB migration: `src/db/migrations/007_memory_tables.sql` — four new tables
+- New DB migration: `src/db/migrations/008_memory_extraction_version.sql` — adds `extraction_version` to `memory_extractions` (independent of `prompt_version`)
+- New entities: `src/entities/memory.ts` — all domain types, mappers, constants
+- New service: `src/services/memoryService.ts` — read-only queries + ContextBlock builder
+- New feature hooks: `src/features/memory/hooks.ts` — `useLifeChapters`, `useContextMemory`, `useActiveChapterCount`
+- `AI_CONFIG.promptVersion` bumped from `'2.1.0'` → `'3.0.0'` — existing per-entry cached reflections will show "Re-reflect" (intentional; context-aware reflections are meaningfully better)
+
+**Required deployment steps:**
+1. Apply `src/db/migrations/007_memory_tables.sql` in Supabase SQL Editor.
+2. Apply `src/db/migrations/008_memory_extraction_version.sql` in Supabase SQL Editor.
+3. Deploy: `supabase functions deploy extract-memory`.
+4. Redeploy: `supabase functions deploy generate-reflection` (context injection + extract-memory fire-and-forget added; context now uses HF emotion seeds for relevance scoring).
+5. No schema cache reload required.
+
+**New invariants (see AGENTS.md):**
+- Memory tables are service_role-only writes
+- `memory_extractions` is the idempotency guard for `extract-memory`
+- `prompt_version` and `extraction_version` on `memory_extractions` are independently versioned — bump only the one that changed
+- Prompt version bumps are architectural events, not routine edits
+- Memory tables are append-only wherever possible
+- Context injection uses HF emotion labels as theme seeds — context is non-empty when entities have been extracted from prior reflections
+
+---
 
 ### Milestone 2.5 — Product Polish & Architectural Refinement (feature/patterns-over-time)
 
