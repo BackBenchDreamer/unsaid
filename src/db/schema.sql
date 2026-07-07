@@ -4,6 +4,14 @@
 -- Run this against a fresh Supabase project (or as a migration).
 -- After running this file, run rls.sql, then user_settings.sql,
 -- then user_settings_rls.sql (in that order).
+-- For incremental deployments, run migrations in order:
+--   src/db/migrations/001_insights_source_hash.sql
+--   src/db/migrations/002_remove_invalid_cached_insights.sql
+--   src/db/migrations/003_reflection_type.sql
+--   src/db/migrations/004_groq_provider_settings.sql
+--   src/db/migrations/005_security_hardening.sql
+--   src/db/migrations/006_weekly_summary_index.sql
+--   src/db/migrations/007_memory_tables.sql  (Milestone 3)
 -- ============================================================
 
 -- ─── Enable required extensions ────────────────────────────
@@ -99,6 +107,87 @@ CREATE TABLE IF NOT EXISTS public.insights (
 
 CREATE INDEX IF NOT EXISTS idx_insights_user ON public.insights(user_id, type);
 
+-- ─── Life Chapters (Milestone 3: Memory Before Intelligence) ─
+-- A life chapter is a meaningful collection of related journal entries
+-- representing a distinct episode (e.g. "IBM Internship", "Thailand Trip").
+-- Discovered automatically by the extract-memory Edge Function.
+-- status: forming → active → dormant
+-- entry_count and last_change_at maintained by extract-memory for stability checks.
+-- signals JSONB stores audit of which candidate signals fired (unused by UI in M3).
+-- See: src/db/migrations/007_memory_tables.sql for full documentation.
+CREATE TABLE IF NOT EXISTS public.life_chapters (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id         UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  name            TEXT,
+  summary         TEXT,
+  chapter_start   DATE NOT NULL,
+  chapter_end     DATE,
+  status          TEXT NOT NULL DEFAULT 'forming'
+                  CHECK (status IN ('forming', 'active', 'dormant')),
+  theme_tags      TEXT[] NOT NULL DEFAULT '{}',
+  entry_count     INT NOT NULL DEFAULT 0,
+  last_change_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  signals         JSONB,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_life_chapters_user
+  ON public.life_chapters(user_id, status);
+
+-- ─── Chapter Entries ───────────────────────────────────────
+-- Join table linking entries to life chapters.
+-- UNIQUE (chapter_id, entry_id) prevents duplicate linkage.
+CREATE TABLE IF NOT EXISTS public.chapter_entries (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  chapter_id  UUID NOT NULL REFERENCES public.life_chapters(id) ON DELETE CASCADE,
+  entry_id    UUID NOT NULL REFERENCES public.entries(id) ON DELETE CASCADE,
+  joined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_chapter_entry UNIQUE (chapter_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chapter_entries_chapter ON public.chapter_entries(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_chapter_entries_entry   ON public.chapter_entries(entry_id);
+
+-- ─── Context Memory ────────────────────────────────────────
+-- Recurring entities extracted from reflected entries.
+-- Used to enrich future reflection prompts with a compact, relevant context block.
+-- topics come from ReflectionPayload.themes (always); others from Groq entity extraction.
+-- importance_score is NULL in M3 — reserved for future retrieval ranking (M4+).
+CREATE TABLE IF NOT EXISTS public.context_memory (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id          UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  entity_type      TEXT NOT NULL
+                   CHECK (entity_type IN ('person', 'place', 'project', 'organization', 'topic')),
+  entity_value     TEXT NOT NULL,
+  mention_count    INT NOT NULL DEFAULT 1,
+  last_seen_date   DATE NOT NULL,
+  emotional_tags   TEXT[] NOT NULL DEFAULT '{}',
+  importance_score NUMERIC,   -- reserved for future retrieval ranking; NULL in M3
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_context_memory_entity UNIQUE (user_id, entity_type, entity_value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_context_memory_user ON public.context_memory(user_id, entity_type);
+
+-- ─── Memory Extractions ────────────────────────────────────
+-- Idempotency guard for the extract-memory Edge Function.
+-- One row written as the FINAL step of a successful extraction.
+-- Absent row = extraction incomplete; next call will retry.
+-- Delete a row to force re-extraction (e.g. after prompt version bump).
+-- prompt_version records the AI_CONFIG.promptVersion from ReflectionPayload._meta.version.
+CREATE TABLE IF NOT EXISTS public.memory_extractions (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id        UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  entry_id       UUID NOT NULL REFERENCES public.entries(id) ON DELETE CASCADE,
+  extracted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  prompt_version TEXT NOT NULL,
+  CONSTRAINT uq_memory_extraction UNIQUE (user_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_extractions_user ON public.memory_extractions(user_id);
+
 -- ─── Auto-update updated_at trigger ────────────────────────
 CREATE OR REPLACE FUNCTION public.set_updated_at()
 RETURNS TRIGGER AS $$
@@ -111,6 +200,16 @@ $$ LANGUAGE plpgsql
 
 CREATE TRIGGER trg_entries_updated_at
   BEFORE UPDATE ON public.entries
+  FOR EACH ROW
+  EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER trg_life_chapters_updated_at
+  BEFORE UPDATE ON public.life_chapters
+  FOR EACH ROW
+  EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER trg_context_memory_updated_at
+  BEFORE UPDATE ON public.context_memory
   FOR EACH ROW
   EXECUTE FUNCTION public.set_updated_at();
 
