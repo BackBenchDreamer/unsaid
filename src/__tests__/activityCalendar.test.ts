@@ -12,6 +12,13 @@ import {
 } from '../entities/activityCalendar';
 import type { ActivityCalendarDayInput } from '../entities/activityCalendar';
 
+import {
+  addDaysToDateOnly,
+  endOfWeekDateOnly,
+  startOfWeekDateOnly,
+} from '../shared/utils/dateOnly';
+
+
 // ─── Helper ────────────────────────────────────────────────────────────────
 
 function countCells(model: ReturnType<typeof buildActivityCalendarModel>): number {
@@ -320,5 +327,56 @@ describe('buildActivityCalendarModel — bounds metadata', () => {
       weekStartsOn: 1,
     });
     expect(model.bounds.totalWeeks).toBe(model.weeks.length);
+  });
+});
+
+describe('buildActivityCalendarModel — timezone-safe date-only behavior', () => {
+  it('never requires UTC timestamps or created_at to place entries', () => {
+    const model = buildActivityCalendarModel({
+      startDate: '2025-03-01',
+      endDate: '2025-03-31',
+      weekStartsOn: 1,
+      days: [
+        { date: '2025-03-09', hasEntry: true },
+        { date: '2025-03-10', hasEntry: true },
+      ],
+    });
+
+    const dates = inRangeDays(model)
+      .filter((day) => day.stats.hasEntry)
+      .map((day) => day.date);
+
+    expect(dates).toEqual(['2025-03-09', '2025-03-10']);
+  });
+
+  it('uses deterministic date-only week bounds across DST-forward periods', () => {
+    expect(startOfWeekDateOnly('2025-03-09', 1)).toBe('2025-03-03');
+    expect(endOfWeekDateOnly('2025-03-09', 1)).toBe('2025-03-09');
+    expect(addDaysToDateOnly('2025-03-09', 1)).toBe('2025-03-10');
+  });
+
+  it('uses deterministic date-only week bounds across DST-back periods', () => {
+    expect(startOfWeekDateOnly('2025-11-02', 1)).toBe('2025-10-27');
+    expect(endOfWeekDateOnly('2025-11-02', 1)).toBe('2025-11-02');
+    expect(addDaysToDateOnly('2025-11-02', 1)).toBe('2025-11-03');
+  });
+
+  it('keeps travelled-user journal dates on their explicit entry_date', () => {
+    const model = buildActivityCalendarModel({
+      startDate: '2025-04-01',
+      endDate: '2025-04-30',
+      weekStartsOn: 1,
+      days: [
+        { date: '2025-04-04', hasEntry: true },
+        { date: '2025-04-05', hasEntry: true },
+      ],
+    });
+
+    const active = model.weeks
+      .flatMap((week) => week.days)
+      .filter((day) => day.stats.hasEntry)
+      .map((day) => day.date);
+
+    expect(active).toEqual(['2025-04-04', '2025-04-05']);
   });
 });

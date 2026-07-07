@@ -5,7 +5,12 @@
  * We never derive it from created_at or from toISOString().
  */
 
-import { format, subDays, startOfYear, endOfYear, parseISO } from 'date-fns';
+import { format, subDays, startOfYear, endOfYear } from 'date-fns';
+import {
+  getDayOfWeekFromDateOnly,
+  getWeekdayIndexFromDateOnly,
+  toLocalDate,
+} from './dateOnly';
 
 /**
  * Get today's date as "YYYY-MM-DD" in the user's local timezone.
@@ -19,14 +24,14 @@ export function getTodayLocal(): string {
  * Format a date for display (e.g. "May 1, 2026").
  */
 export function formatDisplayDate(dateStr: string): string {
-  return format(parseISO(dateStr), 'MMMM d, yyyy');
+  return format(toLocalDate(dateStr), 'MMMM d, yyyy');
 }
 
 /**
  * Format a date for compact display (e.g. "May 1").
  */
 export function formatShortDate(dateStr: string): string {
-  return format(parseISO(dateStr), 'MMM d');
+  return format(toLocalDate(dateStr), 'MMM d');
 }
 
 /**
@@ -57,8 +62,7 @@ export type WeekStart = 0 | 1 | 6;
  * Returns 0 for the first day of the configured week.
  */
 export function getDayOfWeekIndex(dateStr: string, weekStartsOn: WeekStart = 1): number {
-  const day = parseISO(dateStr).getDay();
-  return (day - weekStartsOn + 7) % 7;
+  return getWeekdayIndexFromDateOnly(dateStr, weekStartsOn);
 }
 
 
@@ -73,5 +77,5 @@ export function isToday(dateStr: string): boolean {
  * Get day of week (0 = Sun, 6 = Sat).
  */
 export function getDayOfWeek(dateStr: string): number {
-  return parseISO(dateStr).getDay();
+  return getDayOfWeekFromDateOnly(dateStr);
 }

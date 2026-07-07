@@ -5,17 +5,19 @@
  * rendered by dashboard heatmaps, yearly reviews, timelines, and exported views.
  */
 
-import {
-  addDays,
-  eachDayOfInterval,
-  endOfWeek,
-  format,
-  isSameMonth,
-  parseISO,
-  startOfWeek,
-} from 'date-fns';
 import type { WeekStart } from '../shared/utils/dates';
-import { getDayOfWeekIndex } from '../shared/utils/dates';
+import {
+  addDaysToDateOnly,
+  eachDateOnlyInRange,
+  endOfWeekDateOnly,
+  getDayOfMonthFromDateOnly,
+  getMonthFromDateOnly,
+  getWeekdayIndexFromDateOnly,
+  isDateOnlyInRange,
+  startOfWeekDateOnly,
+} from '../shared/utils/dateOnly';
+
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
 export type ActivityDayTone = 'none' | 'active';
 
@@ -108,33 +110,31 @@ export function buildActivityCalendarModel(args: {
   days?: ActivityCalendarDayInput[];
 }): ActivityCalendarModel {
   const weekStartsOn = args.weekStartsOn ?? 1;
-  const startDate = parseISO(args.startDate);
-  const endDate = parseISO(args.endDate);
   const todayDate = args.todayDate;
 
-  const gridStart = startOfWeek(startDate, { weekStartsOn });
-  const gridEnd = endOfWeek(endDate, { weekStartsOn });
-  const rangeDays = eachDayOfInterval({ start: startDate, end: endDate });
-  const gridDays = eachDayOfInterval({ start: gridStart, end: gridEnd });
+  const gridStart = startOfWeekDateOnly(args.startDate, weekStartsOn);
+  const gridEnd = endOfWeekDateOnly(args.endDate, weekStartsOn);
+  const rangeDays = eachDateOnlyInRange(args.startDate, args.endDate);
+  const gridDays = eachDateOnlyInRange(gridStart, gridEnd);
   const inputByDate = new Map((args.days ?? []).map((day) => [day.date, day]));
 
   const weeks: ActivityCalendarWeek[] = [];
   const monthAnchors: ActivityCalendarMonthAnchor[] = [];
 
   let currentWeek: ActivityCalendarDay[] = [];
-  let currentWeekStart = format(gridStart, 'yyyy-MM-dd');
+  let currentWeekStart = gridStart;
 
   for (let index = 0; index < gridDays.length; index += 1) {
-    const day = gridDays[index];
-    const date = format(day, 'yyyy-MM-dd');
+    const date = gridDays[index];
     const input = inputByDate.get(date);
-    const isInRange = date >= args.startDate && date <= args.endDate;
+    const isInRange = isDateOnlyInRange(date, args.startDate, args.endDate);
     const visual = toVisualState(input);
+    const month = getMonthFromDateOnly(date);
 
     currentWeek.push({
       date,
-      dayOfWeek: getDayOfWeekIndex(date, weekStartsOn),
-      isCurrentMonth: isSameMonth(day, startDate),
+      dayOfWeek: getWeekdayIndexFromDateOnly(date, weekStartsOn),
+      isCurrentMonth: isInRange,
       isInRange,
       isToday: todayDate === date,
       visual,
@@ -143,10 +143,10 @@ export function buildActivityCalendarModel(args: {
       },
     });
 
-    if (date >= args.startDate && date <= args.endDate && day.getDate() === 1) {
+    if (isInRange && getDayOfMonthFromDateOnly(date) === 1) {
       monthAnchors.push({
-        month: day.getMonth(),
-        label: format(day, 'MMM'),
+        month,
+        label: MONTH_LABELS[month],
         weekIndex: Math.floor(index / 7),
         date,
       });
@@ -160,8 +160,7 @@ export function buildActivityCalendarModel(args: {
         days: currentWeek,
       });
       currentWeek = [];
-      const nextDay = addDays(day, 1);
-      currentWeekStart = format(nextDay, 'yyyy-MM-dd');
+      currentWeekStart = addDaysToDateOnly(date, 1);
     }
   }
 
@@ -169,8 +168,8 @@ export function buildActivityCalendarModel(args: {
     bounds: {
       rangeStart: args.startDate,
       rangeEnd: args.endDate,
-      gridStart: format(gridStart, 'yyyy-MM-dd'),
-      gridEnd: format(gridEnd, 'yyyy-MM-dd'),
+      gridStart,
+      gridEnd,
       totalDays: rangeDays.length,
       totalWeeks: weeks.length,
       weekStartsOn,
