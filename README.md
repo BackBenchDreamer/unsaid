@@ -92,6 +92,7 @@ supabase link --project-ref <your-project-ref>
 supabase functions deploy analyze-sentiment
 supabase functions deploy generate-reflection
 supabase functions deploy generate-weekly-summary
+supabase functions deploy extract-memory
 supabase functions deploy encrypt-token
 supabase functions deploy approve-waitlist
 ```
@@ -390,14 +391,18 @@ Stored in `insights.payload` for `type = 'reflection'` rows:
 3. Fetch entry (service role); assert `entry.user_id === user_id`.
 4. Fetch `user_settings` for `hf_token_encrypted`, `hf_model`, `groq_token_encrypted`, `groq_model`.
 5. Guard: if `groq_token_encrypted IS NULL` → return HTTP 422 `REFLECTION_NOT_CONFIGURED`.
-6. Compute `source_hash = SHA-256({ content, promptVersion: '2.0.0', model: groq_model })`.
-7. Cache check: if stored row matches hash **and** passes `isReflectionResult()` → return cached.
-8. Decrypt HF token; call HF emotion model → 7 emotion scores.
-9. Decrypt Groq token; call `https://api.groq.com/openai/v1/chat/completions` with emotion context + entry excerpt.
-10. Parse + validate Groq JSON response with `isReflectionResult()`.
-11. Build `ReflectionPayload` with `_meta.provider = 'groq'`.
-12. Upsert to `insights` with `updated_at = now()`.
-13. Return `{ result, meta: { cached: false, generationMs } }`.
+6. Fetch existing reflection insight from `insights` (for cache validation later).
+7. Decrypt HF token; call HF emotion model → 7 emotion scores.
+8. Extract top-3 emotion labels as theme seeds for context relevance scoring.
+9. Query `context_memory` and `life_chapters` for relevant context (scored by theme overlap with emotion seeds). Build context block (≤ 500 tokens). Non-fatal if unavailable.
+10. Compute `source_hash = SHA-256({ content, promptVersion: '3.0.0', model: groq_model, contextHash? })`. `contextHash` is a SHA-256 of the context block — included when context was retrieved. A changed memory state changes `source_hash`, invalidating the cache and inviting re-reflection.
+11. Cache check: if stored row's `source_hash` matches **and** passes `isReflectionResult()` → return cached.
+12. Decrypt Groq token; call `https://api.groq.com/openai/v1/chat/completions` with emotion scores + entry excerpt. Context block injected into the system prompt when non-empty.
+13. Parse + validate Groq JSON response with `isReflectionResult()`.
+14. Build `ReflectionPayload` with `_meta.provider = 'groq'`, `_meta.version = '3.0.0'`.
+15. Upsert to `insights` with `source_hash` and `updated_at = now()`.
+16. Fire-and-forget `POST /functions/v1/extract-memory` with the user's JWT — extracts entities and scores chapter candidates asynchronously. Client does not wait; errors are logged server-side only.
+17. Return `{ result, meta: { cached: false, generationMs } }`.
 
 The Groq endpoint is hardcoded — no configurable base URL in this milestone.
 
@@ -541,6 +546,7 @@ Run in order in the Supabase SQL Editor (Dashboard → SQL Editor → New query 
 | `src/db/migrations/005_security_hardening.sql` | Fix `search_path` on all DB functions; add ownership guards to `get_heatmap` + `get_memories`; revoke anon access to internal RPCs | **Security** |
 | `src/db/migrations/006_weekly_summary_index.sql` | Create partial unique index `uq_insight_summary_period` on `(user_id, type, period_start, period_end) WHERE entry_id IS NULL` | **Weekly reflection (M2)** |
 | `src/db/migrations/007_memory_tables.sql` | Add `life_chapters`, `chapter_entries`, `context_memory`, `memory_extractions` tables + RLS | **Memory (M3)** |
+| `src/db/migrations/008_memory_extraction_version.sql` | Add `extraction_version` column to `memory_extractions` (separate from `prompt_version`) | **Memory (M3 follow-up)** |
 
 After running migration 004, if settings still fail to load, reload the PostgREST schema cache:
 **Supabase Dashboard → Settings → API → Reload Schema**
@@ -621,6 +627,7 @@ This milestone builds the memory foundation that every future intelligence featu
 **Architecture changes:**
 - New Edge Function: `supabase/functions/extract-memory/` — multi-signal chapter detection, entity extraction, dormancy sweep
 - New DB migration: `src/db/migrations/007_memory_tables.sql` — four new tables
+- New DB migration: `src/db/migrations/008_memory_extraction_version.sql` — adds `extraction_version` to `memory_extractions` (independent of `prompt_version`)
 - New entities: `src/entities/memory.ts` — all domain types, mappers, constants
 - New service: `src/services/memoryService.ts` — read-only queries + ContextBlock builder
 - New feature hooks: `src/features/memory/hooks.ts` — `useLifeChapters`, `useContextMemory`, `useActiveChapterCount`
@@ -628,15 +635,18 @@ This milestone builds the memory foundation that every future intelligence featu
 
 **Required deployment steps:**
 1. Apply `src/db/migrations/007_memory_tables.sql` in Supabase SQL Editor.
-2. Deploy: `supabase functions deploy extract-memory`.
-3. Redeploy: `supabase functions deploy generate-reflection` (context injection + extract-memory fire-and-forget added).
-4. No schema cache reload required.
+2. Apply `src/db/migrations/008_memory_extraction_version.sql` in Supabase SQL Editor.
+3. Deploy: `supabase functions deploy extract-memory`.
+4. Redeploy: `supabase functions deploy generate-reflection` (context injection + extract-memory fire-and-forget added; context now uses HF emotion seeds for relevance scoring).
+5. No schema cache reload required.
 
 **New invariants (see AGENTS.md):**
 - Memory tables are service_role-only writes
 - `memory_extractions` is the idempotency guard for `extract-memory`
+- `prompt_version` and `extraction_version` on `memory_extractions` are independently versioned — bump only the one that changed
 - Prompt version bumps are architectural events, not routine edits
 - Memory tables are append-only wherever possible
+- Context injection uses HF emotion labels as theme seeds — context is non-empty when entities have been extracted from prior reflections
 
 ---
 

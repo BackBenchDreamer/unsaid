@@ -131,6 +131,7 @@ export interface MemoryExtractionRow {
   entry_id: string;
   extracted_at: string;
   prompt_version: string;
+  extraction_version: string;
 }
 
 // ─── Domain Types (camelCase — returned by service layer) ─
@@ -195,9 +196,17 @@ export interface ContextMemory {
  * If absent for an entry_id, extraction has not completed (will be retried).
  * Delete this row to force re-extraction.
  *
- * promptVersion mirrors the AI_CONFIG.promptVersion from
- * ReflectionPayload._meta.version — the version at extraction time,
- * not a hardcoded constant. Enables version-aware future migrations.
+ * Two independent version fields:
+ *
+ *   promptVersion    — mirrors AI_CONFIG.promptVersion from ReflectionPayload._meta.version
+ *                      (the reflection prompt version at extraction time). Answers:
+ *                      "which reflection generated this extraction?"
+ *
+ *   extractionVersion — the EXTRACTION_VERSION constant from the extract-memory Edge Function.
+ *                      Bump this when the extraction pipeline itself changes (new entity types,
+ *                      changed candidate signals, different chapter thresholds). Answers:
+ *                      "which extraction logic version was used?"
+ *                      Delete rows with an old extractionVersion to force re-extraction.
  */
 export interface MemoryExtraction {
   readonly id: string;
@@ -205,6 +214,7 @@ export interface MemoryExtraction {
   readonly entryId: string;
   readonly extractedAt: string;
   readonly promptVersion: string;
+  readonly extractionVersion: string;
 }
 
 /**
@@ -271,5 +281,6 @@ export function memoryExtractionFromRow(row: MemoryExtractionRow): MemoryExtract
     entryId: row.entry_id,
     extractedAt: row.extracted_at,
     promptVersion: row.prompt_version,
+    extractionVersion: row.extraction_version,
   };
 }

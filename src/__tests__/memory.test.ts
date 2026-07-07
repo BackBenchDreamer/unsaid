@@ -183,6 +183,7 @@ describe('memoryExtractionFromRow', () => {
     entry_id: 'entry-42',
     extracted_at: '2026-07-20T12:00:00Z',
     prompt_version: '3.0.0',
+    extraction_version: '1.0.0',
   };
 
   it('maps all fields to camelCase', () => {
@@ -192,12 +193,21 @@ describe('memoryExtractionFromRow', () => {
     expect(extraction.entryId).toBe('entry-42');
     expect(extraction.extractedAt).toBe('2026-07-20T12:00:00Z');
     expect(extraction.promptVersion).toBe('3.0.0');
+    expect(extraction.extractionVersion).toBe('1.0.0');
   });
 
   it('stores prompt version from ReflectionPayload._meta.version (not hardcoded)', () => {
     // The promptVersion field should be whatever was in the reflection at extraction time
     const extraction = memoryExtractionFromRow({ ...base, prompt_version: '2.1.0' });
     expect(extraction.promptVersion).toBe('2.1.0');
+  });
+
+  it('stores extraction_version independently from prompt_version', () => {
+    // extraction_version tracks the extraction pipeline logic version,
+    // not the reflection prompt version. They are bumped independently.
+    const extraction = memoryExtractionFromRow({ ...base, prompt_version: '4.0.0', extraction_version: '2.0.0' });
+    expect(extraction.promptVersion).toBe('4.0.0');
+    expect(extraction.extractionVersion).toBe('2.0.0');
   });
 });
 

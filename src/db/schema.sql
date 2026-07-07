@@ -11,7 +11,8 @@
 --   src/db/migrations/004_groq_provider_settings.sql
 --   src/db/migrations/005_security_hardening.sql
 --   src/db/migrations/006_weekly_summary_index.sql
---   src/db/migrations/007_memory_tables.sql  (Milestone 3)
+--   src/db/migrations/007_memory_tables.sql          (Milestone 3)
+--   src/db/migrations/008_memory_extraction_version.sql (Milestone 3 follow-up)
 -- ============================================================
 
 -- ─── Enable required extensions ────────────────────────────
@@ -175,14 +176,22 @@ CREATE INDEX IF NOT EXISTS idx_context_memory_user ON public.context_memory(user
 -- Idempotency guard for the extract-memory Edge Function.
 -- One row written as the FINAL step of a successful extraction.
 -- Absent row = extraction incomplete; next call will retry.
--- Delete a row to force re-extraction (e.g. after prompt version bump).
--- prompt_version records the AI_CONFIG.promptVersion from ReflectionPayload._meta.version.
+-- Delete a row to force re-extraction (e.g. after extraction logic changes).
+--
+-- Two independent version fields:
+--   prompt_version     — AI_CONFIG.promptVersion from ReflectionPayload._meta.version.
+--                        Answers "which reflection generated this extraction?"
+--   extraction_version — EXTRACTION_VERSION constant from the extract-memory Edge Function.
+--                        Bump when extraction pipeline logic changes (entity types, scoring,
+--                        chapter thresholds). Answers "which extraction logic was used?"
+--                        Added by migration 008_memory_extraction_version.sql.
 CREATE TABLE IF NOT EXISTS public.memory_extractions (
-  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id        UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  entry_id       UUID NOT NULL REFERENCES public.entries(id) ON DELETE CASCADE,
-  extracted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  prompt_version TEXT NOT NULL,
+  id                 UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id            UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  entry_id           UUID NOT NULL REFERENCES public.entries(id) ON DELETE CASCADE,
+  extracted_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  prompt_version     TEXT NOT NULL,
+  extraction_version TEXT NOT NULL DEFAULT '1.0.0',
   CONSTRAINT uq_memory_extraction UNIQUE (user_id, entry_id)
 );
 

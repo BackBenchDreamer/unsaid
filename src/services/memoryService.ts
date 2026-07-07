@@ -113,7 +113,7 @@ export const memoryService = {
   async getMemoryExtractions(userId: string): Promise<MemoryExtraction[]> {
     const { data, error } = await supabase
       .from('memory_extractions')
-      .select('id, user_id, entry_id, extracted_at, prompt_version')
+      .select('id, user_id, entry_id, extracted_at, prompt_version, extraction_version')
       .eq('user_id', userId)
       .order('extracted_at', { ascending: false });
 

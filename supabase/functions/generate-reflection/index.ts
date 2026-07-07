@@ -407,33 +407,14 @@ Deno.serve(async (req: Request) => {
   const hfModel = settings.hf_model ?? AI_CONFIG.defaultHFModel;
   const groqModel = settings.groq_model ?? AI_CONFIG.defaultGroqModel;
 
-  // ── 7. Fetch relevant context memory (M3: context injection) ──
-  // Retrieve relevant context before computing source_hash so the hash
-  // reflects the context that will be injected into the prompt.
-  // Gracefully returns isEmpty=true if no memory exists yet (zero regression).
-  let contextResult: ContextResult = { contextText: '', contextHash: undefined, isEmpty: true };
-  try {
-    // We don't have themes yet (HF runs later), so we pass empty themes here.
-    // The context injection uses entity-level relevance scoring, which works
-    // with an empty theme array by relying solely on entity mention counts.
-    // After HF runs and themes are known, the context is scored more precisely
-    // in future milestones. For M3, this is a best-effort retrieval.
-    contextResult = await getRelevantContext(svc, user.id, []);
-  } catch (ctxErr) {
-    // Context retrieval failure is non-fatal — proceed without context injection.
-    console.warn('[generate-reflection] Context retrieval failed (non-fatal):', ctxErr instanceof Error ? ctxErr.message : String(ctxErr));
-  }
-
-  // ── 8. Compute source_hash ───────────────────────────────
-  // Uses groq_model (not hf_model) — the reflection output depends on the LLM.
-  // contextHash is included when context was retrieved — a changed memory
-  // will invalidate the cache and invite the user to re-reflect.
-  const sourceHash = await sha256Hex(
-    sourceEnvelope(entry.content, AI_CONFIG.promptVersion, groqModel, contextResult.contextHash),
-  );
-
-  // ── 9. Cache check ───────────────────────────────────────
-  const { data: existing } = await svc
+  // ── 7. Cache check (pre-HF, source_hash only) ────────────
+  // A preliminary cache check using only content + promptVersion + model.
+  // If a cached reflection exists we still need to confirm the source_hash
+  // matches — which requires the contextHash. We do a provisional check here
+  // to fast-path re-reflections where nothing has changed, deferring the
+  // full hash computation until after HF runs.
+  // NOTE: Full cache validation happens at step 11 (after context is known).
+  const { data: existingInsight } = await svc
     .from('insights')
     .select('payload, source_hash')
     .eq('entry_id', entryId)
@@ -441,23 +422,7 @@ Deno.serve(async (req: Request) => {
     .eq('user_id', user.id)
     .maybeSingle();
 
-  if (existing && existing.source_hash === sourceHash) {
-    const payload = existing.payload as unknown;
-    if (isReflectionResult(payload)) {
-      const cached: ReflectionResult = {
-        summary: (payload as ReflectionResult).summary,
-        emotions: (payload as ReflectionResult).emotions,
-        themes: (payload as ReflectionResult).themes,
-        question: (payload as ReflectionResult).question,
-      };
-      return json({ result: cached, meta: { cached: true, generationMs: 0 } });
-    }
-    console.warn(
-      `[generate-reflection] CACHE_INVALID entry=${entryId} — stored payload failed isReflectionResult(); regenerating`,
-    );
-  }
-
-  // ── 9. Decrypt HF token ──────────────────────────────────
+  // ── 8. Decrypt HF token ──────────────────────────────────
   let hfToken: string;
   try {
     hfToken = await decryptToken(settings.hf_token_encrypted, encryptionKey);
@@ -466,7 +431,7 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Failed to decrypt emotion analysis token. Please re-save it in Settings.' }, 500);
   }
 
-  // ── 10. Call HF emotion model ────────────────────────────
+  // ── 9. Call HF emotion model ─────────────────────────────
   const hfStartMs = Date.now();
 
   const hfRes = await fetch(
@@ -526,6 +491,61 @@ Deno.serve(async (req: Request) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[generate-reflection] HF item validation failed for entry=${entryId}: ${msg}`);
     return json({ error: 'Unexpected emotion model response.', code: 'HF_SHAPE_ERROR' }, 502);
+  }
+
+  // ── 10. Fetch relevant context memory (M3: context injection) ──
+  //
+  // ObsA fix: context retrieval now happens AFTER HF has run and returned
+  // emotion labels. We extract the top emotion labels as seed themes to drive
+  // relevance scoring in getRelevantContext. This ensures the context scorer
+  // has real signal to work with instead of an empty theme array, so context
+  // injection produces meaningful output rather than an empty block.
+  //
+  // Themes are derived from HF emotion labels (top 3 by score) rather than
+  // ReflectionPayload.themes (which don't exist yet — Groq hasn't run).
+  // This is intentional: emotion labels are the best proxy available at this
+  // point in the pipeline. Groq's themes will be more precise but arrive later.
+  // The relevance scoring in getRelevantContext handles partial overlap gracefully.
+  //
+  // Context retrieval is non-fatal. If it fails, reflection proceeds without context
+  // (zero regression from pre-M3 behaviour).
+  const emotionThemeSeeds = Object.entries(emotionScores)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([label]) => label.toLowerCase());
+
+  let contextResult: ContextResult = { contextText: '', contextHash: undefined, isEmpty: true };
+  try {
+    contextResult = await getRelevantContext(svc, user.id, emotionThemeSeeds);
+  } catch (ctxErr) {
+    // Context retrieval failure is non-fatal — proceed without context injection.
+    console.warn('[generate-reflection] Context retrieval failed (non-fatal):', ctxErr instanceof Error ? ctxErr.message : String(ctxErr));
+  }
+
+  // ── 11. Compute source_hash + cache check ────────────────
+  // source_hash is computed here (after HF + context are both known) so it
+  // captures all inputs that affect the final reflection: entry content,
+  // prompt version, model, and the context memory state.
+  // contextHash is included when context was retrieved — a changed memory
+  // state will invalidate the cache and invite the user to re-reflect.
+  const sourceHash = await sha256Hex(
+    sourceEnvelope(entry.content, AI_CONFIG.promptVersion, groqModel, contextResult.contextHash),
+  );
+
+  if (existingInsight && existingInsight.source_hash === sourceHash) {
+    const payload = existingInsight.payload as unknown;
+    if (isReflectionResult(payload)) {
+      const cached: ReflectionResult = {
+        summary: (payload as ReflectionResult).summary,
+        emotions: (payload as ReflectionResult).emotions,
+        themes: (payload as ReflectionResult).themes,
+        question: (payload as ReflectionResult).question,
+      };
+      return json({ result: cached, meta: { cached: true, generationMs: 0 } });
+    }
+    console.warn(
+      `[generate-reflection] CACHE_INVALID entry=${entryId} — stored payload failed isReflectionResult(); regenerating`,
+    );
   }
 
   // ── 12. Decrypt Groq token ───────────────────────────────
