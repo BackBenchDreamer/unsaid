@@ -48,6 +48,21 @@ export function getCurrentYearRange(): { start: string; end: string } {
 }
 
 /**
+ * Calendar week start options.
+ */
+export type WeekStart = 0 | 1 | 6;
+
+/**
+ * Get local day of week aligned to a configurable week start.
+ * Returns 0 for the first day of the configured week.
+ */
+export function getDayOfWeekIndex(dateStr: string, weekStartsOn: WeekStart = 1): number {
+  const day = parseISO(dateStr).getDay();
+  return (day - weekStartsOn + 7) % 7;
+}
+
+
+/**
  * Check if a date string is today.
  */
 export function isToday(dateStr: string): boolean {
