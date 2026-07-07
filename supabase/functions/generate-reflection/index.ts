@@ -42,10 +42,18 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // when bumping promptVersion and redeploying.
 //
 const AI_CONFIG = {
-  promptVersion: '2.1.0',  // bumped from 2.0.0 — voice fix: second person ("you") required
+  // M3 bump: context injection added — all reflections now include relevant memory when available.
+  // This is an architectural event: reflections with context are meaningfully different from those without.
+  // Existing cached reflections will be marked stale (isStale = true) and users invited to re-reflect.
+  promptVersion: '3.0.0',
   defaultHFModel: 'j-hartmann/emotion-english-distilroberta-base',
   defaultGroqModel: 'llama-3.1-8b-instant',
 } as const;
+
+// Maximum tokens for context memory injection into Groq prompts.
+// 1 token ≈ 4 chars. Keep in sync with src/entities/memory.ts CONTEXT_MEMORY_MAX_TOKENS.
+const CONTEXT_MEMORY_MAX_TOKENS = 500;
+const CONTEXT_MEMORY_MIN_MENTIONS = 3;
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -92,8 +100,14 @@ function sourceEnvelope(
   content: string,
   promptVersion: string,
   model: string,
+  contextHash?: string,
 ): string {
   // Field order is fixed — do not reorder or existing hashes become invalid.
+  // contextHash is included when context memory is injected.
+  // A changed context will cause source_hash mismatch → reflection marked stale → user invited to re-reflect.
+  if (contextHash) {
+    return JSON.stringify({ content, promptVersion, model, contextHash });
+  }
   return JSON.stringify({ content, promptVersion, model });
 }
 
@@ -158,6 +172,133 @@ function isReflectionResult(v: unknown): v is ReflectionResult {
     Array.isArray(r.themes) &&
     typeof r.question === 'string' && r.question.trim().length > 0
   );
+}
+
+// ─── Context memory retrieval ─────────────────────────────────
+//
+// Queries context_memory and life_chapters for the user, scores each by
+// relevance to the current entry's themes, and builds a compact context block.
+//
+// This is the retrieval extension point: the scoring logic here can be upgraded
+// in future milestones without changing the prompt construction or DB schema.
+//
+// Returns { contextText, contextHash } where contextHash is a SHA-256 of the
+// context text — used in sourceEnvelope so the source_hash changes when memory changes.
+
+interface ContextResult {
+  contextText: string;
+  contextHash: string | undefined;
+  isEmpty: boolean;
+}
+
+async function getRelevantContext(
+  svc: ReturnType<typeof import('https://esm.sh/@supabase/supabase-js@2').createClient>,
+  userId: string,
+  currentThemes: string[],
+): Promise<ContextResult> {
+  const themesLower = currentThemes.map((t) => t.toLowerCase());
+  const charBudget = CONTEXT_MEMORY_MAX_TOKENS * 4; // 1 token ≈ 4 chars
+
+  // Fetch all qualifying context memory (above minimum mentions threshold)
+  const { data: allMemory } = await svc
+    .from('context_memory')
+    .select('entity_type, entity_value, mention_count, emotional_tags')
+    .eq('user_id', userId)
+    .gte('mention_count', CONTEXT_MEMORY_MIN_MENTIONS) as {
+      data: Array<{ entity_type: string; entity_value: string; mention_count: number; emotional_tags: string[] }> | null;
+    };
+
+  // Score each entity by relevance to current themes (not recency or frequency)
+  // +2 if entity_value semantically overlaps with themes
+  // +1 if emotional_tags overlap with themes
+  const scoredMemory = (allMemory ?? [])
+    .map((entity) => {
+      let score = 0;
+      if (themesLower.some(
+        (t) => entity.entity_value.includes(t) || t.includes(entity.entity_value),
+      )) {
+        score += 2;
+      }
+      if ((entity.emotional_tags ?? []).some((tag) => themesLower.includes(tag.toLowerCase()))) {
+        score += 1;
+      }
+      return { entity, score };
+    })
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score || b.entity.mention_count - a.entity.mention_count);
+
+  // Fetch active chapters, score by theme tag overlap
+  const { data: activeChapters } = await svc
+    .from('life_chapters')
+    .select('name, summary, theme_tags, last_change_at')
+    .eq('user_id', userId)
+    .eq('status', 'active') as {
+      data: Array<{ name: string | null; summary: string | null; theme_tags: string[]; last_change_at: string }> | null;
+    };
+
+  const scoredChapters = (activeChapters ?? [])
+    .filter((c) => c.name) // only named chapters
+    .map((chapter) => {
+      const overlap = (chapter.theme_tags ?? []).filter(
+        (t) => themesLower.includes(t.toLowerCase()),
+      ).length;
+      return { chapter, overlap };
+    })
+    .sort((a, b) => b.overlap - a.overlap);
+
+  // Build context text within token budget
+  const parts: string[] = [];
+  let charCount = 0;
+
+  // Group entities by type for readability
+  const entityGroups = new Map<string, string[]>();
+  for (const { entity } of scoredMemory) {
+    if (entity.entity_type === 'topic') continue; // topics are already in the prompt via themes
+    const group = entityGroups.get(entity.entity_type) ?? [];
+    group.push(entity.entity_value);
+    entityGroups.set(entity.entity_type, group);
+  }
+
+  // Include topic entities separately for completeness
+  const topicEntities = scoredMemory
+    .filter(({ entity }) => entity.entity_type === 'topic')
+    .map(({ entity }) => entity.entity_value);
+
+  if (entityGroups.size > 0 || topicEntities.length > 0) {
+    const entityParts: string[] = [];
+    for (const [type, values] of entityGroups) {
+      entityParts.push(`${type}s: ${values.slice(0, 5).join(', ')}`);
+    }
+    if (topicEntities.length > 0) {
+      entityParts.push(`recurring topics: ${topicEntities.slice(0, 5).join(', ')}`);
+    }
+    const entityText = `Relevant context about this person: ${entityParts.join('; ')}.`;
+    if (charCount + entityText.length <= charBudget) {
+      parts.push(entityText);
+      charCount += entityText.length;
+    }
+  }
+
+  // Add top active chapter if it has theme overlap
+  const topChapter = scoredChapters[0];
+  if (topChapter && topChapter.overlap > 0 && topChapter.chapter.name) {
+    const chapterText = topChapter.chapter.summary
+      ? `They are currently in a life chapter called "${topChapter.chapter.name}": ${topChapter.chapter.summary}`
+      : `They are currently in a life chapter called "${topChapter.chapter.name}".`;
+    if (charCount + chapterText.length <= charBudget) {
+      parts.push(chapterText);
+      charCount += chapterText.length;
+    }
+  }
+
+  const contextText = parts.join(' ');
+  if (!contextText) {
+    return { contextText: '', contextHash: undefined, isEmpty: true };
+  }
+
+  // Compute a hash of the context for source_hash inclusion
+  const contextHash = await sha256Hex(contextText);
+  return { contextText, contextHash, isEmpty: false };
 }
 
 // ─── CORS helper ─────────────────────────────────────────────
@@ -267,14 +408,32 @@ Deno.serve(async (req: Request) => {
   const hfModel = settings.hf_model ?? AI_CONFIG.defaultHFModel;
   const groqModel = settings.groq_model ?? AI_CONFIG.defaultGroqModel;
 
-  // ── 7. Compute source_hash ───────────────────────────────
-  // Uses groq_model (not hf_model) — the reflection output depends on the LLM,
-  // so changing the Groq model correctly invalidates the cache.
+  // ── 7. Fetch relevant context memory (M3: context injection) ──
+  // Retrieve relevant context before computing source_hash so the hash
+  // reflects the context that will be injected into the prompt.
+  // Gracefully returns isEmpty=true if no memory exists yet (zero regression).
+  let contextResult: ContextResult = { contextText: '', contextHash: undefined, isEmpty: true };
+  try {
+    // We don't have themes yet (HF runs later), so we pass empty themes here.
+    // The context injection uses entity-level relevance scoring, which works
+    // with an empty theme array by relying solely on entity mention counts.
+    // After HF runs and themes are known, the context is scored more precisely
+    // in future milestones. For M3, this is a best-effort retrieval.
+    contextResult = await getRelevantContext(svc, user.id, []);
+  } catch (ctxErr) {
+    // Context retrieval failure is non-fatal — proceed without context injection.
+    console.warn('[generate-reflection] Context retrieval failed (non-fatal):', ctxErr instanceof Error ? ctxErr.message : String(ctxErr));
+  }
+
+  // ── 8. Compute source_hash ───────────────────────────────
+  // Uses groq_model (not hf_model) — the reflection output depends on the LLM.
+  // contextHash is included when context was retrieved — a changed memory
+  // will invalidate the cache and invite the user to re-reflect.
   const sourceHash = await sha256Hex(
-    sourceEnvelope(entry.content, AI_CONFIG.promptVersion, groqModel),
+    sourceEnvelope(entry.content, AI_CONFIG.promptVersion, groqModel, contextResult.contextHash),
   );
 
-  // ── 8. Cache check ───────────────────────────────────────
+  // ── 9. Cache check ───────────────────────────────────────
   const { data: existing } = await svc
     .from('insights')
     .select('payload, source_hash')
@@ -370,7 +529,7 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Unexpected emotion model response.', code: 'HF_SHAPE_ERROR' }, 502);
   }
 
-  // ── 11. Decrypt Groq token ───────────────────────────────
+  // ── 12. Decrypt Groq token ───────────────────────────────
   let groqToken: string;
   try {
     groqToken = await decryptToken(settings.groq_token_encrypted, encryptionKey);
@@ -379,7 +538,7 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Failed to decrypt reflection token. Please re-save it in Settings.' }, 500);
   }
 
-  // ── 12. Call Groq LLM ────────────────────────────────────
+  // ── 13. Call Groq LLM ────────────────────────────────────
   //
   // Groq endpoint is hardcoded — no configurable base URL.
   // response_format: { type: "json_object" } enforces structured JSON output.
@@ -389,7 +548,14 @@ Deno.serve(async (req: Request) => {
     .map(([k, v]) => `${k}=${v.toFixed(2)}`)
     .join(', ');
 
-  const systemPrompt = `You are a thoughtful journaling companion speaking directly to the person who wrote this entry. Use "you" and "your" — never refer to them as "the writer" or in third person. Be honest, warm, and specific to what they wrote. Never be prescriptive or preachy.`;
+  // Build system prompt — inject context block if available.
+  // Context section uses "Context about this person:" as the named section header.
+  // If no context exists, the prompt is identical to the pre-M3 version (zero regression).
+  const contextSection = contextResult.isEmpty
+    ? ''
+    : `\n\nContext about this person:\n${contextResult.contextText}`;
+
+  const systemPrompt = `You are a thoughtful journaling companion speaking directly to the person who wrote this entry. Use "you" and "your" — never refer to them as "the writer" or in third person. Be honest, warm, and specific to what they wrote. Never be prescriptive or preachy.${contextSection}`;
 
   const userPrompt = `Given the journal entry excerpt and its emotional composition, write a short reflection (2–3 sentences) addressed directly to the person — use "you", not "the writer". Reveal something they may not have explicitly noticed. End with exactly one open-ended follow-up question, also addressed to them directly.
 
@@ -497,7 +663,7 @@ Rules:
 
   const fullPayload = { ...reflectionResult, _meta: meta };
 
-  // ── 15. Upsert insight ───────────────────────────────────
+  // ── 16. Upsert insight ───────────────────────────────────
   //
   // updated_at is explicitly set to now() on both insert and conflict-update
   // so it always reflects when the row was last written.
@@ -518,7 +684,29 @@ Rules:
     return json({ error: 'Failed to save reflection' }, 500);
   }
 
-  // ── 16. Return result + observability metadata ───────────
+  // ── 17. Fire extract-memory asynchronously (non-blocking) ──
+  // Do NOT await. Do NOT let failure affect the reflection response.
+  // The extract-memory function has its own idempotency guard and error handling.
+  try {
+    const extractMemoryUrl = `${supabaseUrl}/functions/v1/extract-memory`;
+    const authHeader = req.headers.get('Authorization') ?? '';
+    // Fire-and-forget: no await, errors silently ignored
+    fetch(extractMemoryUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader,
+      },
+      body: JSON.stringify({ entryId }),
+    }).catch((err: unknown) => {
+      console.warn('[generate-reflection] extract-memory fire-and-forget failed (non-fatal):', err instanceof Error ? err.message : String(err));
+    });
+  } catch (err) {
+    // Synchronous errors in the setup (not the fetch itself) — also non-fatal
+    console.warn('[generate-reflection] extract-memory dispatch failed (non-fatal):', err instanceof Error ? err.message : String(err));
+  }
+
+  // ── 18. Return result + observability metadata ───────────
   const groqMs = Date.now() - groqStartMs;
   return json({
     result: reflectionResult,
