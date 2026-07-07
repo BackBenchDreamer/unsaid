@@ -15,6 +15,35 @@ import type { EntryInsight, SentimentResult, ReflectionResult, WeeklyResult } fr
 import { ServiceError } from './errors';
 
 /**
+ * Parse a structured error body from a Supabase Edge Function HTTP error.
+ *
+ * supabase-js wraps non-2xx Edge Function responses in FunctionsHttpError.
+ * error.message is always the generic wrapper string.
+ * The actual JSON body lives in error.context (a Response object) — must be
+ * read with .json() (async). Falls back gracefully if parsing fails.
+ *
+ * Returns { code, message } extracted from the body, or the generic defaults.
+ */
+async function parseEdgeFunctionError(
+  error: unknown,
+): Promise<{ code: string; message: string }> {
+  let code = 'EDGE_FUNCTION_ERROR';
+  let message = error instanceof Error ? error.message : 'Unknown error';
+
+  if (error instanceof FunctionsHttpError) {
+    try {
+      const body = await (error.context as Response).json() as { error?: string; code?: string };
+      if (body?.code) code = body.code;
+      if (body?.error) message = body.error;
+    } catch {
+      // context body already consumed or not JSON — use generic message
+    }
+  }
+
+  return { code, message };
+}
+
+/**
  * Response envelope returned by the analyze-sentiment Edge Function on success.
  */
 interface GenerateInsightResponse {
@@ -36,16 +65,6 @@ interface GenerateReflectionResponse {
     cached: boolean;
     generationMs: number;
   };
-}
-
-/**
- * Error envelope returned by the Edge Function on failure.
- * `code` is one of: MODEL_LOADING | PROVIDER_ERROR | SHAPE_ERROR | REFLECTION_NOT_CONFIGURED |
- * (absent for auth/server errors)
- */
-interface EdgeFunctionErrorResponse {
-  error: string;
-  code?: string;
 }
 
 /** Raw DB row shape from the insights table. */
@@ -133,24 +152,8 @@ export const insightsService = {
       body: { entryId },
     });
 
-    // supabase-js wraps non-2xx Edge Function responses in a FunctionsHttpError.
-    // error.message is always the generic "Edge Function returned a non-2xx status code".
-    // The actual JSON body lives in error.context (a Response object) — must be
-    // read with .json() (async). Falls back to error.message if parsing fails.
     if (error) {
-      let code = 'EDGE_FUNCTION_ERROR';
-      let message = error.message;
-
-      if (error instanceof FunctionsHttpError) {
-        try {
-          const body = await (error.context as Response).json() as EdgeFunctionErrorResponse;
-          if (body?.code) code = body.code;
-          if (body?.error) message = body.error;
-        } catch {
-          // context body already consumed or not JSON — use generic message
-        }
-      }
-
+      const { code, message } = await parseEdgeFunctionError(error);
       throw new ServiceError(message, code);
     }
 
@@ -185,28 +188,13 @@ export const insightsService = {
       body: { entryId },
     });
 
-    // Same FunctionsHttpError pattern as generateInsight — error.message is the
-    // generic wrapper; actual structured body is in error.context (Response).
     if (error) {
-      let code = 'EDGE_FUNCTION_ERROR';
-      let message = error.message;
-
-      if (error instanceof FunctionsHttpError) {
-        try {
-          const body = await (error.context as Response).json() as EdgeFunctionErrorResponse;
-          if (body?.code) code = body.code;
-          if (body?.error) message = body.error;
-        } catch {
-          // context body already consumed or not JSON — use generic message
-        }
-      }
-
+      const { code, message } = await parseEdgeFunctionError(error);
       // REFLECTION_NOT_CONFIGURED is an expected condition — not an error state.
       // Groq token not set yet; caller silently falls back to analyze-sentiment.
       if (code === 'REFLECTION_NOT_CONFIGURED') {
         return { ok: false, code: 'REFLECTION_NOT_CONFIGURED' };
       }
-
       throw new ServiceError(message, code);
     }
 
@@ -222,7 +210,7 @@ export const insightsService = {
   },
 
   /**
-   * Trigger weekly summary generation for the given week start date.
+   * Trigger weekly reflection generation for the given week start date.
    *
    * Builds on existing per-entry reflections where available (best-effort):
    *   - For entries that have been reflected on: uses the stored reflection summary.
@@ -242,19 +230,7 @@ export const insightsService = {
     });
 
     if (error) {
-      let code = 'EDGE_FUNCTION_ERROR';
-      let message = error.message;
-
-      if (error instanceof FunctionsHttpError) {
-        try {
-          const body = await (error.context as Response).json() as EdgeFunctionErrorResponse;
-          if (body?.code) code = body.code;
-          if (body?.error) message = body.error;
-        } catch {
-          // context body already consumed or not JSON — use generic message
-        }
-      }
-
+      const { code, message } = await parseEdgeFunctionError(error);
       // Expected non-error conditions — caller handles without showing error UI.
       if (code === 'WEEKLY_NOT_CONFIGURED') {
         return { ok: false, code: 'WEEKLY_NOT_CONFIGURED' };
@@ -262,7 +238,6 @@ export const insightsService = {
       if (code === 'INSUFFICIENT_ENTRIES') {
         return { ok: false, code: 'INSUFFICIENT_ENTRIES' };
       }
-
       throw new ServiceError(message, code);
     }
 
@@ -270,7 +245,7 @@ export const insightsService = {
 
     if (import.meta.env.DEV) {
       console.debug(
-        `[weekly-summary] weekStart=${weekStart} cached=${response.meta?.cached} generationMs=${response.meta?.generationMs}`,
+        `[weekly] weekStart=${weekStart} cached=${response.meta?.cached} generationMs=${response.meta?.generationMs}`,
       );
     }
 

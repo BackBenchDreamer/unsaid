@@ -1743,14 +1743,38 @@ a:hover { color: var(--accent-hover); }
   font-size: 0.78rem;
   white-space: nowrap;
 }
-/* Weighted variant used in recurring themes section — font-size and
-   opacity are set inline; the class just provides base styles. */
+/* Weighted variant used in recurring themes section — opacity is set inline. */
 .theme-pill-weighted {
   transition: opacity 0.15s ease;
 }
 .theme-pill-weighted:hover {
   opacity: 1 !important;
   color: var(--text-primary);
+}
+
+/* Theme pill group — wraps a pill + its context label */
+.theme-pill-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  transition: opacity 0.15s ease;
+}
+.theme-pill-group:hover {
+  opacity: 1 !important;
+}
+.theme-pill-group:hover .theme-pill {
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+/* Context label beneath each theme pill — entry count or emotion phrase */
+.theme-pill-meta {
+  font-size: 0.67rem;
+  color: var(--text-muted);
+  padding-left: 0.5rem;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
 }
 
 /* Emotional Timeline */

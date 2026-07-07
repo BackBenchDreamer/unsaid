@@ -164,50 +164,130 @@ function WeeklySummaryCard({
 
 // ─── RecurringThemesSection ────────────────────────────────
 
+interface ThemeInfo {
+  theme: string;
+  count: number;
+  /**
+   * Optional short context phrase derived from existing reflection emotion data.
+   * Examples: "mostly joy", "often sadness", "mixed emotions".
+   * Only present when the dominant emotion is clear across ≥2 entries.
+   * No AI calls — derived from stored emotion scores.
+   */
+  context: string | null;
+}
+
 interface RecurringThemesSectionProps {
   insights: EntryInsight[];
 }
 
 function RecurringThemesSection({ insights }: RecurringThemesSectionProps) {
-  const themeCounts = useMemo(() => {
-    const counts = new Map<string, number>();
+  const themeData = useMemo((): ThemeInfo[] => {
+    // Pass 1: count theme occurrences + accumulate emotion scores per theme
+    const countMap = new Map<string, number>();
+    // Map from theme → Map<emotionLabel, cumulativeScore>
+    const emotionMap = new Map<string, Map<string, number>>();
+
     for (const i of insights) {
       if (i.type !== 'reflection' || !isReflectionPayload(i.payload)) continue;
       const r = i.payload as ReflectionPayload;
-      for (const theme of r.themes) {
-        const normalised = theme.trim();
-        if (normalised) {
-          counts.set(normalised, (counts.get(normalised) ?? 0) + 1);
+
+      for (const rawTheme of r.themes) {
+        const theme = rawTheme.trim();
+        if (!theme) continue;
+
+        countMap.set(theme, (countMap.get(theme) ?? 0) + 1);
+
+        // Accumulate emotion scores for this theme from the entry's emotions
+        let themeEmotions = emotionMap.get(theme);
+        if (!themeEmotions) {
+          themeEmotions = new Map<string, number>();
+          emotionMap.set(theme, themeEmotions);
+        }
+        for (const e of r.emotions) {
+          const label = e.label.toLowerCase();
+          themeEmotions.set(label, (themeEmotions.get(label) ?? 0) + e.score);
         }
       }
     }
-    return Array.from(counts.entries())
+
+    // Pass 2: build sorted ThemeInfo array with optional context
+    return Array.from(countMap.entries())
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 8);
+      .slice(0, 8)
+      .map(([theme, count]): ThemeInfo => {
+        let context: string | null = null;
+
+        // Only surface emotion context when there are ≥2 entries for this theme —
+        // a single data point isn't a pattern.
+        if (count >= 2) {
+          const emotions = emotionMap.get(theme);
+          if (emotions && emotions.size > 0) {
+            // Find the dominant accumulated emotion label
+            let topLabel = '';
+            let topScore = 0;
+            let totalScore = 0;
+            emotions.forEach((score, label) => {
+              totalScore += score;
+              if (score > topScore) { topScore = score; topLabel = label; }
+            });
+
+            const dominance = totalScore > 0 ? topScore / totalScore : 0;
+
+            // Only show emotion context when one emotion is clearly dominant (>45%)
+            // and it's not "neutral" (neutral context adds no insight).
+            if (dominance > 0.45 && topLabel && topLabel !== 'neutral') {
+              const valence = getEmotionValence(topLabel);
+              // Map emotion label to a human-readable context phrase
+              const EMOTION_PHRASE: Record<string, string> = {
+                joy: 'often uplifting',
+                surprise: 'often surprising',
+                sadness: 'often heavy',
+                anger: 'often tense',
+                fear: 'often anxious',
+                disgust: 'often difficult',
+              };
+              // Use specific phrase if known; fall back to valence-based phrase
+              // for any emotion labels added in future model updates.
+              if (EMOTION_PHRASE[topLabel]) {
+                context = EMOTION_PHRASE[topLabel];
+              } else {
+                context = valence === 'positive' ? 'often positive'
+                  : valence === 'negative' ? 'often heavy'
+                  : null;
+              }
+            }
+          }
+        }
+
+        return { theme, count, context };
+      });
   }, [insights]);
 
-  if (themeCounts.length === 0) return null;
+  if (themeData.length === 0) return null;
 
-  const maxCount = themeCounts[0]?.[1] ?? 1;
+  const maxCount = themeData[0]?.count ?? 1;
 
   return (
     <section style={{ marginTop: 'var(--space-xl)', marginBottom: 'var(--space-2xl)' }}>
       <h2 style={SECTION_HEADING_STYLE}>Recurring themes</h2>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-xs)', alignItems: 'baseline' }}>
-        {themeCounts.map(([theme, count]) => {
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-sm)', alignItems: 'flex-start' }}>
+        {themeData.map(({ theme, count, context }) => {
           const weight = count / maxCount; // 0..1
-          // Scale font-size between 0.78rem (rare) and 1rem (most frequent)
-          const fontSize = 0.78 + weight * 0.22;
-          const opacity = 0.55 + weight * 0.45;
+          const opacity = 0.6 + weight * 0.4;
+          const entryLabel = `${count} entr${count === 1 ? 'y' : 'ies'}`;
           return (
-            <span
+            <div
               key={theme}
-              className="theme-pill theme-pill-weighted"
-              style={{ fontSize: `${fontSize.toFixed(2)}rem`, opacity }}
-              title={`${count} reflection${count === 1 ? '' : 's'}`}
+              className="theme-pill-group"
+              style={{ opacity }}
             >
-              {theme}
-            </span>
+              <span className="theme-pill theme-pill-weighted">
+                {theme}
+              </span>
+              <span className="theme-pill-meta">
+                {context ?? entryLabel}
+              </span>
+            </div>
           );
         })}
       </div>

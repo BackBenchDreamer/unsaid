@@ -64,7 +64,6 @@ interface WeeklyResult {
   dominantEmotions: ReflectionEmotion[];
   recurringThemes: string[];
   emotionalArc: string;
-  suggestedReflection?: string;
 }
 
 interface InsightMeta {
@@ -151,7 +150,6 @@ function isWeeklyResult(v: unknown): v is WeeklyResult {
     ) &&
     Array.isArray(r.recurringThemes) &&
     typeof r.emotionalArc === 'string' && r.emotionalArc.trim().length > 0
-    // suggestedReflection is optional — not required
   );
 }
 
@@ -329,15 +327,12 @@ Deno.serve(async (req: Request) => {
   if (existing && existing.source_hash === weeklySourceHash) {
     const payload = existing.payload as unknown;
     if (isWeeklyResult(payload)) {
+      const w = payload as WeeklyResult;
       const cached: WeeklyResult = {
-        narrative: (payload as WeeklyResult).narrative,
-        dominantEmotions: (payload as WeeklyResult).dominantEmotions,
-        recurringThemes: (payload as WeeklyResult).recurringThemes,
-        emotionalArc: (payload as WeeklyResult).emotionalArc,
-        // Forward suggestedReflection if present (future-proof)
-        ...(typeof (payload as WeeklyResult).suggestedReflection === 'string'
-          ? { suggestedReflection: (payload as WeeklyResult).suggestedReflection }
-          : {}),
+        narrative: w.narrative,
+        dominantEmotions: w.dominantEmotions,
+        recurringThemes: w.recurringThemes,
+        emotionalArc: w.emotionalArc,
       };
       return json({ result: cached, meta: { cached: true, generationMs: 0 } });
     }

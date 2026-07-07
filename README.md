@@ -227,45 +227,69 @@ The fix gates the `LexicalComposer` on `editorSeedReady`, so `InitPlugin` always
 
 ## AI Insights
 
-### Milestone 2 — Patterns Over Time
+### The reflection hierarchy
 
-Weekly synthesis builds on per-entry reflections to answer "What has my recent emotional journey looked like?" using narrative prose rather than statistics.
+UnSaid is designed around a single architectural principle: **each level of reflection builds on the level below it, preferring existing work over reprocessing raw entries**.
 
-**Hierarchical architecture:**
 ```
 Journal Entry
       ↓
-Per-entry Reflection  (type='reflection', entry_id=UUID)     ← M1
+Per-entry Reflection   (M1) — type='reflection', entry_id=UUID
       ↓
-Weekly Synthesis      (type='summary',    entry_id=NULL,
-                       period_start/end=Mon–Sun week)         ← M2
+Weekly Reflection      (M2) — type='summary',    entry_id=NULL, period_start/end
+      ↓
+Monthly Reflection     (M3) — type='pattern',    entry_id=NULL, period_start/end
+      ↓
+Year in Reflection     (M4) — type='pattern',    entry_id=NULL, period_start/end
 ```
 
-**Weekly synthesis flow:**
-1. User navigates to `/insights`. If ≥ `WEEKLY_REFLECTION_MIN_ENTRIES` entries exist for the current week and no weekly summary exists, an invitation card appears.
+**Why this matters:**
+
+- A Weekly Reflection reads the week's per-entry reflections, not the raw journal entries. It synthesises work that has already been done.
+- A Monthly Reflection, when it arrives, will read the month's weekly reflections — not the individual days.
+- This keeps inference costs proportional to what is new, not proportional to the entire journal.
+- It also produces better results: a weekly narrative built from "this entry was about work and felt heavy" is richer than one built from raw text.
+
+**Graceful degradation:**
+
+Each level falls back gracefully when lower-level work is absent:
+- A weekly reflection for a day without a per-entry reflection uses the raw entry excerpt as a substitute.
+- A monthly reflection for a week without a weekly reflection would use per-entry summaries as a substitute.
+- The fallback is transparent to the user and documented inline in each Edge Function.
+
+This keeps the system useful from day one while rewarding consistent reflection habits over time.
+
+---
+
+### Milestone 2 — Patterns Over Time
+
+Weekly reflection builds on per-entry reflections to answer "What has my recent emotional journey looked like?" using narrative prose rather than statistics.
+
+**Weekly reflection flow:**
+1. User navigates to `/insights`. If ≥ `WEEKLY_REFLECTION_MIN_ENTRIES` entries exist for the current week and no weekly reflection exists, an invitation card appears.
 2. User clicks "Reflect on this week" — calls `generate-weekly-summary` Edge Function.
 3. Edge Function uses existing per-entry reflection summaries where available; falls back to raw entry excerpts for unreflected entries (best-effort).
 4. Groq produces a narrative synthesis (not statistics): `narrative`, `dominantEmotions`, `recurringThemes`, `emotionalArc`.
 5. Result cached in `insights` table with `entry_id=NULL`, `period_start`, `period_end`, and `source_hash`.
 6. Once generated, the invitation is replaced by the narrative. A subtle "may be outdated" notice + Regenerate appears only if staleness is detected.
 
-**Staleness detection for weekly summaries:**
+**Staleness detection:**
 - Mirror of the per-entry staleness model.
-- If any per-entry reflection was created _after_ the weekly summary's `createdAt`, the summary is considered stale.
+- If any per-entry reflection was created _after_ the weekly reflection's `createdAt`, the reflection is considered stale.
 - A secondary async SHA-256 check compares the stored `source_hash` against a recomputed hash from current reflection source hashes.
-- Only the staleness notice + Regenerate appear when stale — never a Regenerate button on a fresh summary.
+- Only the staleness notice + Regenerate appear when stale — never a Regenerate button on a fresh reflection.
 
 **Independent versioning:**
-- Per-entry reflection: `promptVersion = '2.0.0'` (unchanged).
-- Weekly synthesis: `weeklyPromptVersion = '1.0.0'` (independent; stored in `_meta`).
+- Per-entry reflection: `promptVersion = '2.1.0'`.
+- Weekly reflection: `weeklyPromptVersion = '1.0.0'` (independent; stored in `_meta`).
 - Bumping either version invalidates only the relevant insight type's caches.
 
 **Insights dashboard — section order:**
-1. **This week** — weekly narrative (or invitation, or subtle hint)
-2. **Recurring themes** — frequency-weighted pill cloud from all reflection `themes[]` arrays
+1. **This week** — weekly narrative (or invitation, or subtle hint when not enough entries)
+2. **Recurring themes** — pill cloud from all reflection `themes[]` arrays, with lightweight emotion context derived from stored emotion scores (no new AI calls)
 3. **Emotional balance over time** — CSS-only stacked bars for last 10 reflected entries
-4. **Mood overview** — all-time distribution bar (preserved from M1)
-5. **Recent reflections** — per-entry reflection cards (preserved from M1)
+4. **Mood overview** — all-time distribution bar
+5. **Recent reflections** — per-entry reflection cards
 
 **`WeeklyPayload` schema:**
 ```json
@@ -277,9 +301,8 @@ Weekly Synthesis      (type='summary',    entry_id=NULL,
   ],
   "recurringThemes": ["Work", "Rest"],
   "emotionalArc": "from uncertainty toward quiet focus",
-  "suggestedReflection": null,
   "_meta": {
-    "promptVersion": "2.0.0",
+    "promptVersion": "n/a",
     "weeklyPromptVersion": "1.0.0",
     "provider": "groq",
     "model": "llama-3.1-8b-instant",
@@ -288,8 +311,6 @@ Weekly Synthesis      (type='summary',    entry_id=NULL,
   }
 }
 ```
-
-> `suggestedReflection` is an optional field reserved for future use (coaching prompts). Not produced by the M2 Edge Function.
 
 **`generate-weekly-summary` call flow:**
 1. Validate JWT → resolve `user_id`.
@@ -305,7 +326,7 @@ Weekly Synthesis      (type='summary',    entry_id=NULL,
 11. Decrypt Groq token; call Groq LLM with synthesis prompt + weekly context block.
 12. Parse + validate Groq JSON response.
 13. Build `WeeklyPayload` with `_meta.weeklyPromptVersion`.
-14. Upsert to `insights` with `entry_id=NULL`, `period_start`, `period_end`, `type='summary'`, `source_hash`, `updated_at=now()`.
+14. SELECT existing row → UPDATE if found, INSERT if not (resilient to index absence).
 15. Return `{ result, meta: { cached, generationMs } }`.
 
 ---
@@ -569,14 +590,38 @@ Both functions now raise `Unauthorized` unless `p_user_id = auth.uid()`.
 
 ## Changelog
 
+### Milestone 2.5 — Product Polish & Architectural Refinement (feature/patterns-over-time)
+
+**Terminology:**
+- All user-facing strings now consistently use "Weekly Reflection" — never "Weekly Summary" or "synthesis" in any UI surface.
+- README reflects the same terminology throughout.
+
+**Payload simplification:**
+- `suggestedReflection?: string` removed from `WeeklyPayload` and `WeeklyResult`. The field was reserved for a hypothetical future feature; keeping it created a gap between what the product produces and what the schema expresses. If coaching prompts become a product feature, the field will be introduced then with a purpose.
+- `generate-weekly-summary` cache return path simplified: no longer spreads an optional field that was never populated.
+
+**Recurring themes — from data to observations:**
+- Each theme pill now surfaces lightweight context derived from stored emotion scores (no new AI calls):
+  - "Work · often uplifting" when joy is consistently dominant across entries mentioning that theme (>45% of accumulated emotion score)
+  - "Family · often heavy" when sadness is dominant
+  - "Friends · 4 entries" when no single emotion is dominant enough to be meaningful
+- Context is suppressed for single-entry themes (one data point is not a pattern).
+- Pills render as vertical groups (theme + context line) instead of flat weighted text.
+
+**Architecture refactor:**
+- `parseEdgeFunctionError()` extracted as a shared private helper in `insightsService.ts`. The three service methods (`generateInsight`, `generateReflection`, `generateWeeklySummary`) each contained an identical 12-line error-parsing block. Now replaced with a single call.
+- `EdgeFunctionErrorResponse` interface removed (no longer needed after the refactor).
+
+**README additions:**
+- Reflection hierarchy section documents the long-term architecture philosophy (Journal Entry → Per-entry Reflection → Weekly → Monthly → Year) with graceful degradation notes.
+
 ### Milestone 2 — Patterns Over Time (feature/patterns-over-time)
 
 **New features:**
 - **Weekly reflection** — synthesises a week's entries into a narrative emotional arc using the `generate-weekly-summary` Edge Function. Best-effort: uses per-entry reflection summaries where available, falls back to raw entry excerpts. Cached with independent `weeklyPromptVersion = '1.0.0'` so per-entry caches are never disturbed.
-- **Recurring themes section** — frequency-weighted pill cloud aggregated from all reflection `themes[]` arrays. Top 8 themes shown; size scales with frequency.
+- **Recurring themes section** — pill cloud aggregated from all reflection `themes[]` arrays. Top 8 themes shown; includes emotion context derived from stored data.
 - **Emotional timeline** — CSS-only stacked bars showing positive/neutral/negative balance for the last 10 reflected entries, ordered by entry date.
-- **Weekly staleness detection** — mirrors the per-entry staleness model. Shows "may be outdated" notice + secondary Regenerate only when staleness is detected; never shows Regenerate on a fresh summary.
-- **`WeeklyPayload`** type with optional `suggestedReflection?: string` field (reserved for future coaching prompts; not produced in M2).
+- **Weekly staleness detection** — mirrors the per-entry staleness model. Shows "may be outdated" notice + Regenerate only when staleness is detected.
 - **`WEEKLY_REFLECTION_MIN_ENTRIES`** constant in `src/shared/constants.ts` — controls the invitation threshold without touching business logic.
 
 **Architecture changes:**

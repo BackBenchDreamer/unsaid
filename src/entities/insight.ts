@@ -142,16 +142,11 @@ export interface ReflectionResult {
 // ─── Weekly summary types ─────────────────────────────────────
 
 /**
- * Full typed payload for type='summary' rows (weekly synthesis).
+ * Full typed payload for type='summary' rows (weekly reflection).
  * Stored in the DB; includes _meta for self-description.
  * _meta.weeklyPromptVersion tracks the weekly prompt version independently
  * from the per-entry promptVersion so that per-entry caches are never
  * invalidated by changes to the weekly synthesis prompt.
- *
- * suggestedReflection is an optional field reserved for future use
- * (e.g. gentle coaching or journaling prompts). It is not produced by
- * the M2 Edge Function but is included in the schema so that future
- * prompt versions can add it without a payload migration.
  */
 export interface WeeklyPayload {
   /** 2–4 sentence narrative synthesising the week's emotional arc. */
@@ -162,32 +157,22 @@ export interface WeeklyPayload {
   recurringThemes: string[];
   /** Short phrase describing the emotional trajectory, e.g. "from uncertainty toward calm". */
   emotionalArc: string;
-  /**
-   * Optional coaching prompt or suggested reflection question.
-   * Reserved for future use — not produced by the M2 Edge Function.
-   * Present on the schema to allow future prompt versions to add it
-   * without requiring a payload migration.
-   */
-  suggestedReflection?: string;
   _meta: InsightMeta;
 }
 
 /**
  * Edge Function wire return type — what generateWeeklySummary() returns to the client.
  * Identical to WeeklyPayload minus _meta.
- * suggestedReflection is optional here too for forward compatibility.
  */
 export interface WeeklyResult {
   narrative: string;
   dominantEmotions: ReflectionEmotion[];
   recurringThemes: string[];
   emotionalArc: string;
-  suggestedReflection?: string;
 }
 
 /**
  * Type-narrowing guard: returns true if p contains WeeklyPayload fields.
- * Does NOT require suggestedReflection — it is optional and absent in M2.
  * Checks structural shape only — does not require _meta.
  */
 export function isWeeklyPayload(p: unknown): p is WeeklyPayload {
