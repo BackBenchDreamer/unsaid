@@ -218,10 +218,14 @@ export function useGenerateInsight() {
 // ─── Weekly Summary Hooks ──────────────────────────────────
 
 /**
- * Weekly prompt version — independent from AI_CONFIG.promptVersion.
+ * Weekly reflection version — independent from AI_CONFIG.promptVersion.
  * Used when computing the client-side weekly staleness hash.
- * Must stay in sync with WEEKLY_CONFIG.weeklyPromptVersion in the
+ * Must stay in sync with WEEKLY_CONFIG.version in the
  * generate-weekly-summary Edge Function.
+ *
+ * NOTE: this value is used as the 'weeklyPromptVersion' key inside the
+ * JSON.stringify hash envelope. That key name is stable and must not change —
+ * it is baked into all existing cached source_hash values.
  */
 export const WEEKLY_PROMPT_VERSION = '1.0.0';
 

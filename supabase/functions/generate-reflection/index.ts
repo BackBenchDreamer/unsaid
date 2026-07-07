@@ -67,7 +67,7 @@ interface ReflectionResult {
 }
 
 interface InsightMeta {
-  promptVersion: string;
+  version: string;
   provider: string;
   model: string;
   generatedAt: string;
@@ -488,7 +488,7 @@ Rules:
 
   // ── 14. Build full payload with _meta ────────────────────
   const meta: InsightMeta = {
-    promptVersion: AI_CONFIG.promptVersion,
+    version: AI_CONFIG.promptVersion,
     provider: 'groq',
     model: groqModel,
     generatedAt: new Date().toISOString(),

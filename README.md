@@ -302,8 +302,7 @@ Weekly reflection builds on per-entry reflections to answer "What has my recent 
   "recurringThemes": ["Work", "Rest"],
   "emotionalArc": "from uncertainty toward quiet focus",
   "_meta": {
-    "promptVersion": "n/a",
-    "weeklyPromptVersion": "1.0.0",
+    "version": "1.0.0",
     "provider": "groq",
     "model": "llama-3.1-8b-instant",
     "generatedAt": "2026-07-14T09:00:00.000Z",
@@ -311,6 +310,8 @@ Weekly reflection builds on per-entry reflections to answer "What has my recent 
   }
 }
 ```
+
+`_meta.version` holds the prompt version that generated this insight — `"1.0.0"` for weekly reflections, `"2.1.0"` for per-entry reflections. The two version spaces are independent; bumping one never invalidates the other.
 
 **`generate-weekly-summary` call flow:**
 1. Validate JWT → resolve `user_id`.
@@ -325,7 +326,7 @@ Weekly reflection builds on per-entry reflections to answer "What has my recent 
 10. Cache check: if stored `summary` insight matches hash and passes `isWeeklyResult()` → return cached.
 11. Decrypt Groq token; call Groq LLM with synthesis prompt + weekly context block.
 12. Parse + validate Groq JSON response.
-13. Build `WeeklyPayload` with `_meta.weeklyPromptVersion`.
+13. Build `WeeklyPayload` with `_meta.version = WEEKLY_CONFIG.version`.
 14. SELECT existing row → UPDATE if found, INSERT if not (resilient to index absence).
 15. Return `{ result, meta: { cached, generationMs } }`.
 
@@ -352,7 +353,7 @@ Two-provider architecture: HuggingFace for emotion classification, Groq for refl
 - Both tokens are AES-256-GCM encrypted by `encrypt-token` using `APP_ENCRYPTION_KEY`. The plaintext is never stored or returned.
 - The `encrypt-token` Edge Function accepts `provider: 'hf' | 'groq'` (defaults to `'hf'` for backward compatibility) and writes to the corresponding `user_settings` column.
 
-**`AI_CONFIG.promptVersion`:** bumped from `'1.0.0'` to `'2.0.0'` in Milestone 1. All cached `'sentiment'` source hashes become stale — users see "Re-reflect" on their next visit. This is intentional.
+**`AI_CONFIG.promptVersion`:** bumped from `'1.0.0'` → `'2.0.0'` (M1) → `'2.1.0'` (M2, voice fix). Each bump stales all per-entry cached rows — users see "Re-reflect" on their next visit. This is intentional. Stored in `_meta.version` on each row.
 
 **Naming reference:** see [`foundation-of-reflection-plan.md`](foundation-of-reflection-plan.md) for the full naming reference table.
 
@@ -372,9 +373,9 @@ Stored in `insights.payload` for `type = 'reflection'` rows:
   "themes": ["Work", "Family"],
   "question": "One open-ended follow-up question?",
   "_meta": {
+    "version": "2.1.0",
     "provider": "groq",
     "model": "llama-3.1-8b-instant",
-    "promptVersion": "2.0.0",
     "generatedAt": "2026-07-10T12:00:00.000Z",
     "generationMs": 3200
   }
@@ -607,6 +608,9 @@ Both functions now raise `Unauthorized` unless `p_user_id = auth.uid()`.
   - "Friends · 4 entries" when no single emotion is dominant enough to be meaningful
 - Context is suppressed for single-entry themes (one data point is not a pattern).
 - Pills render as vertical groups (theme + context line) instead of flat weighted text.
+
+**`InsightMeta` unified version field:**
+- `promptVersion` and `weeklyPromptVersion` replaced by a single `version` field on `InsightMeta`. Per-entry reflections store `"2.1.0"`; weekly reflections store `"1.0.0"`. No special-case placeholder values. The hash envelope key `weeklyPromptVersion` inside `JSON.stringify` is preserved unchanged — renaming it would silently invalidate all existing weekly reflection caches.
 
 **Architecture refactor:**
 - `parseEdgeFunctionError()` extracted as a shared private helper in `insightsService.ts`. The three service methods (`generateInsight`, `generateReflection`, `generateWeeklySummary`) each contained an identical 12-line error-parsing block. Now replaced with a single call.

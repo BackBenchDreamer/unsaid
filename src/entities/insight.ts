@@ -12,17 +12,16 @@
 /**
  * Canonical AI configuration for UnSaid.
  *
- * promptVersion: bump this string whenever prompt logic changes in the
- *   Edge Function. All existing source_hash values become stale automatically —
- *   users will see "Re-reflect" on their next visit.
+ * promptVersion: bump this string whenever the per-entry reflection prompt
+ *   changes in either Edge Function. All existing per-entry source_hash values
+ *   become stale — users see "Re-reflect" on their next visit. This is
+ *   intentional: the new version supersedes all prior cached output.
  *
- *   promptVersion bump from 1.0.0 → 2.0.0: existing 'sentiment' source hashes
- *   become stale. Users see "Re-reflect" on next visit. This is intentional —
- *   the new reflection experience supersedes the old single-label output.
+ *   History: 1.0.0 → 2.0.0 (reflection overhaul), 2.0.0 → 2.1.0 (voice fix)
  *
- * defaultModel: fallback display value if user has not set a model in settings.
- *   The actual model used at inference time comes from settings.aiModel
- *   (mapped from user_settings.hf_model in the DB).
+ * defaultModel: fallback display value if the user has not set a model in
+ *   settings. The actual model used at inference time comes from
+ *   settings.aiModel (mapped from user_settings.hf_model in the DB).
  *
  * EDGE FUNCTION NOTE: supabase/functions/analyze-sentiment/index.ts and
  *   supabase/functions/generate-reflection/index.ts each contain a local
@@ -52,8 +51,14 @@ export type InsightType = 'sentiment' | 'summary' | 'pattern' | 'reflection';
  * how or when an insight was generated, or with which provider/model/prompt.
  */
 export interface InsightMeta {
-  /** e.g. "2.0.0" — bump AI_CONFIG.promptVersion to invalidate all caches. */
-  promptVersion: string;
+  /**
+   * Prompt version that generated this insight.
+   * Per-entry reflections: "2.1.0" (AI_CONFIG.promptVersion).
+   * Weekly reflections: "1.0.0" (WEEKLY_CONFIG.version).
+   * Bump the relevant version in the Edge Function to invalidate caches
+   * of that type only — the two version spaces are independent.
+   */
+  version: string;
   /**
    * Inference backend identifier, e.g. "huggingface" or "groq".
    * Stored so rows remain interpretable if additional backends are added later.
@@ -67,13 +72,6 @@ export interface InsightMeta {
   generatedAt: string;
   /** Wall-clock milliseconds for the inference call. 0 = cache hit. */
   generationMs: number;
-  /**
-   * Independent version for weekly summary prompts. Only present on
-   * type='summary' rows. Starts at '1.0.0' and is bumped separately from
-   * promptVersion so that per-entry reflection caches are never disturbed
-   * by changes to the weekly prompt.
-   */
-  weeklyPromptVersion?: string;
 }
 
 /**
@@ -199,9 +197,10 @@ export interface EntryInsight {
   /** Open-schema — use isSentimentPayload(), isReflectionPayload(), or isWeeklyPayload() to narrow. */
   payload: Record<string, unknown>;
   /**
-   * SHA-256 of sourceEnvelope(content, promptVersion, model) at generation time.
+   * SHA-256 of the source envelope at generation time.
+   * - Per-entry rows: sha256Hex(sourceEnvelope(content, promptVersion, model))
+   * - Weekly rows: sha256Hex(JSON.stringify({ weekStart, weekEnd, weeklyPromptVersion, model, entryHashes }))
    * Null for legacy rows (pre-migration). Null rows are treated as always-stale.
-   * For weekly summary rows: SHA-256 of the weekly source envelope.
    */
   sourceHash: string | null;
   createdAt: string;

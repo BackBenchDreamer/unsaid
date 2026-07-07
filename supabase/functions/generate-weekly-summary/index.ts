@@ -42,13 +42,18 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 // ─── Local config mirror ──────────────────────────────────────
 //
-// weeklyPromptVersion is independent from AI_CONFIG.promptVersion used by
-// per-entry reflections. Bumping this invalidates weekly summary caches only.
+// version is independent from AI_CONFIG.promptVersion used by per-entry
+// reflections. Bumping this invalidates weekly reflection caches only.
 // Do NOT bump AI_CONFIG.promptVersion here — that would invalidate per-entry
 // reflection caches and is handled by the generate-reflection Edge Function.
 //
+// NOTE: the hash envelope input key is still named 'weeklyPromptVersion'
+// (inside the JSON.stringify for source_hash computation). Do not rename
+// that key — it is part of all existing cached source_hash values and
+// changing it would invalidate every user's weekly reflection cache.
+//
 const WEEKLY_CONFIG = {
-  weeklyPromptVersion: '1.0.0',
+  version: '1.0.0',
   defaultGroqModel: 'llama-3.1-8b-instant',
 } as const;
 
@@ -67,8 +72,7 @@ interface WeeklyResult {
 }
 
 interface InsightMeta {
-  promptVersion: string;
-  weeklyPromptVersion: string;
+  version: string;
   provider: string;
   model: string;
   generatedAt: string;
@@ -303,11 +307,15 @@ Deno.serve(async (req: Request) => {
   // entryHashes is already in entry_date ascending order (from the DB query)
 
   // ── 10. Compute weekly source_hash ───────────────────────
+  // IMPORTANT: the key 'weeklyPromptVersion' inside this JSON.stringify is
+  // part of the hash input for all existing cached rows. Do NOT rename it
+  // even though the config field is now called 'version'. Changing the key
+  // would silently invalidate every user's weekly reflection cache.
   const weeklySourceHash = await sha256Hex(
     JSON.stringify({
       weekStart,
       weekEnd,
-      weeklyPromptVersion: WEEKLY_CONFIG.weeklyPromptVersion,
+      weeklyPromptVersion: WEEKLY_CONFIG.version,
       model: groqModel,
       entryHashes,
     }),
@@ -465,8 +473,7 @@ Rules:
 
   // ── 16. Build full payload with _meta ────────────────────
   const meta: InsightMeta = {
-    promptVersion: 'n/a',             // Not applicable — weekly rows use weeklyPromptVersion
-    weeklyPromptVersion: WEEKLY_CONFIG.weeklyPromptVersion,
+    version: WEEKLY_CONFIG.version,
     provider: 'groq',
     model: groqModel,
     generatedAt: new Date().toISOString(),

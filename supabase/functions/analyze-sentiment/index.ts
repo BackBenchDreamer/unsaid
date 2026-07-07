@@ -77,7 +77,7 @@ interface SentimentResult {
 }
 
 interface InsightMeta {
-  promptVersion: string;
+  version: string;
   /** Identifier of the AI inference backend, e.g. "huggingface". */
   provider: string;
   model: string;
@@ -587,7 +587,7 @@ Deno.serve(async (req: Request) => {
   // inference backends (e.g. OpenAI, Anthropic) are added in future.
   // Keep in sync with the InsightMeta interface in src/entities/insight.ts.
   const meta: InsightMeta = {
-    promptVersion: AI_CONFIG.promptVersion,
+    version: AI_CONFIG.promptVersion,
     provider: 'huggingface',
     model,
     generatedAt: new Date().toISOString(),
