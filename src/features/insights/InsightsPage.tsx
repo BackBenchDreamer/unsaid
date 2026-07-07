@@ -33,7 +33,7 @@ import {
   isWeeklyPayload,
 } from '../../entities/insight';
 import type { EntryInsight, ReflectionPayload, WeeklyPayload } from '../../entities/insight';
-import { formatDisplayDate } from '../../shared/utils/dates';
+import { formatDisplayDate, formatShortDate } from '../../shared/utils/dates';
 import { getEmotionValence, POSITIVE_EMOTIONS, NEGATIVE_EMOTIONS } from '../../shared/utils/emotions';
 import { WEEKLY_REFLECTION_MIN_ENTRIES } from '../../shared/constants';
 
@@ -77,6 +77,7 @@ interface WeeklySummaryCardProps {
 
 function WeeklySummaryCard({
   weekStart,
+  weekEnd,
   entryCount,
   summary,
   hasEnough,
@@ -136,7 +137,7 @@ function WeeklySummaryCard({
         )}
         <div style={{ marginTop: 'var(--space-sm)', display: 'flex', alignItems: 'center', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)' }}>
-            Week of {weekStart}
+            {formatShortDate(weekStart)} – {formatShortDate(weekEnd)}
           </span>
           {isWeeklyStale && (
             <>
@@ -190,7 +191,7 @@ function RecurringThemesSection({ insights }: RecurringThemesSectionProps) {
   const maxCount = themeCounts[0]?.[1] ?? 1;
 
   return (
-    <section style={{ marginBottom: 'var(--space-2xl)' }}>
+    <section style={{ marginTop: 'var(--space-xl)', marginBottom: 'var(--space-2xl)' }}>
       <h2 style={SECTION_HEADING_STYLE}>Recurring themes</h2>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-xs)', alignItems: 'baseline' }}>
         {themeCounts.map(([theme, count]) => {
@@ -293,7 +294,7 @@ function EmotionalTimelineSection({ insights, entriesById }: EmotionalTimelineSe
                 )}
               </div>
               <div className="timeline-date-label">
-                {formatDisplayDate(entryDate).slice(0, 3)}
+                {formatShortDate(entryDate)}
               </div>
             </div>
           );
@@ -474,9 +475,11 @@ export default function InsightsPage() {
     return m;
   }, [allEntries]);
 
-  // Weekly reflection state
+  // Weekly reflection state — pass entriesById so staleness detection is scoped
+  // to only entries within the current week (prevents false positives when
+  // re-reflecting entries from other weeks).
   const { weekStart, weekEnd, entryCount, summary, hasEnough, isWeeklyStale } =
-    useCurrentWeekInsight(entryDates ?? []);
+    useCurrentWeekInsight(entryDates ?? [], entriesById);
   const generateWeeklyMutation = useGenerateWeeklySummary();
 
   const isLoading = insightsLoading || settingsLoading || entriesLoading;
@@ -585,34 +588,30 @@ export default function InsightsPage() {
 
   // ── State D: full dashboard ─────────────────────────────
 
-  // Mood distribution for legacy sentiment overview
+  // Mood distribution computed from the deduplicated insight list.
+  // Uses allPerEntryInsights (reflection preferred over sentiment per entry)
+  // to prevent double-counting entries that have both a sentiment and
+  // a reflection row. Each entry contributes exactly one count.
   const counts = { positive: 0, neutral: 0, negative: 0 };
 
-  const sentimentInsights = (insights ?? []).filter(
-    (i) => i.type === 'sentiment' && isSentimentPayload(i.payload),
-  );
-  sentimentInsights.forEach((i) => {
-    const s = isSentimentPayload(i.payload) ? i.payload : null;
-    if (s) counts[s.label]++;
-  });
-
-  const reflectionInsightsAll = (insights ?? []).filter(
-    (i) => i.type === 'reflection' && isReflectionPayload(i.payload),
-  );
-  for (const i of reflectionInsightsAll) {
-    const payload = i.payload as unknown as ReflectionPayload;
-    const pos = payload.emotions
-      .filter((e) => POSITIVE_EMOTIONS.has(e.label.toLowerCase()))
-      .reduce((s, e) => s + e.score, 0);
-    const neg = payload.emotions
-      .filter((e) => NEGATIVE_EMOTIONS.has(e.label.toLowerCase()))
-      .reduce((s, e) => s + e.score, 0);
-    const neu = payload.emotions
-      .filter((e) => e.label.toLowerCase() === 'neutral')
-      .reduce((s, e) => s + e.score, 0);
-    if (pos >= neg && pos >= neu) counts.positive++;
-    else if (neg >= pos && neg >= neu) counts.negative++;
-    else counts.neutral++;
+  for (const i of allPerEntryInsights) {
+    if (isReflectionPayload(i.payload)) {
+      const payload = i.payload as unknown as ReflectionPayload;
+      const pos = payload.emotions
+        .filter((e) => POSITIVE_EMOTIONS.has(e.label.toLowerCase()))
+        .reduce((s, e) => s + e.score, 0);
+      const neg = payload.emotions
+        .filter((e) => NEGATIVE_EMOTIONS.has(e.label.toLowerCase()))
+        .reduce((s, e) => s + e.score, 0);
+      const neu = payload.emotions
+        .filter((e) => e.label.toLowerCase() === 'neutral')
+        .reduce((s, e) => s + e.score, 0);
+      if (pos >= neg && pos >= neu) counts.positive++;
+      else if (neg >= pos && neg >= neu) counts.negative++;
+      else counts.neutral++;
+    } else if (isSentimentPayload(i.payload)) {
+      counts[i.payload.label]++;
+    }
   }
 
   const total = counts.positive + counts.neutral + counts.negative;
@@ -623,24 +622,30 @@ export default function InsightsPage() {
       <p className="page-subtitle">Your recent emotional journey.</p>
 
       {/* ── 1. Weekly Reflection ─────────────────────────── */}
-      <section style={{ marginTop: 'var(--space-xl)', marginBottom: 'var(--space-2xl)' }}>
-        <h2 style={SECTION_HEADING_STYLE}>This week</h2>
-        <WeeklySummaryCard
-          weekStart={weekStart}
-          weekEnd={weekEnd}
-          entryCount={entryCount}
-          summary={summary}
-          hasEnough={hasEnough}
-          isWeeklyStale={isWeeklyStale}
-          isGenerating={generateWeeklyMutation.isPending}
-          onGenerate={() => generateWeeklyMutation.mutate(weekStart)}
-        />
-        {generateWeeklyMutation.isError && (
-          <p style={{ fontSize: '0.8rem', color: 'var(--danger)', marginTop: 'var(--space-xs)' }}>
-            Could not generate weekly reflection. Please try again.
-          </p>
-        )}
-      </section>
+      {/* Only render the section when there is something worth showing:
+          a summary already exists, or at least one entry exists this week.
+          If the user hasn't written anything this week, the section is hidden
+          entirely — no orphaned heading. */}
+      {(summary !== undefined || entryCount > 0) && (
+        <section style={{ marginTop: 'var(--space-xl)', marginBottom: 'var(--space-2xl)' }}>
+          <h2 style={SECTION_HEADING_STYLE}>This week</h2>
+          <WeeklySummaryCard
+            weekStart={weekStart}
+            weekEnd={weekEnd}
+            entryCount={entryCount}
+            summary={summary}
+            hasEnough={hasEnough}
+            isWeeklyStale={isWeeklyStale}
+            isGenerating={generateWeeklyMutation.isPending}
+            onGenerate={() => generateWeeklyMutation.mutate(weekStart)}
+          />
+          {generateWeeklyMutation.isError && (
+            <p style={{ fontSize: '0.8rem', color: 'var(--danger)', marginTop: 'var(--space-xs)' }}>
+              Could not generate weekly reflection. Please try again.
+            </p>
+          )}
+        </section>
+      )}
 
       {/* ── 2. Recurring Themes ──────────────────────────── */}
       <RecurringThemesSection insights={insights ?? []} />

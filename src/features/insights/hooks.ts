@@ -258,7 +258,15 @@ export function useWeeklyInsights() {
  * @param entryDates  All entry dates ("YYYY-MM-DD") for the current user.
  *                    Typically from useEntryDates().data ?? [].
  */
-export function useCurrentWeekInsight(entryDates: string[]): {
+export function useCurrentWeekInsight(
+  entryDates: string[],
+  /** Optional map of entryId → entryDate. Used to scope staleness detection
+   *  to only entries whose entry_date falls within the current week.
+   *  Without this, a re-reflection on any entry (from any week) would
+   *  incorrectly mark the current week summary as stale.
+   */
+  entriesById?: Map<string, string>,
+): {
   weekStart: string;
   weekEnd: string;
   entryCount: number;
@@ -269,12 +277,22 @@ export function useCurrentWeekInsight(entryDates: string[]): {
   const { data: insights } = useInsights();
   const { data: settings } = useSettings();
 
-  // Compute current week range (Mon–Sun) in user-local calendar
-  const today = new Date();
-  const weekStartDate = startOfWeek(today, { weekStartsOn: 1 });
-  const weekEndDate = endOfWeek(today, { weekStartsOn: 1 });
-  const weekStart = format(weekStartDate, 'yyyy-MM-dd');
-  const weekEnd = format(weekEndDate, 'yyyy-MM-dd');
+  // Compute current week range (Mon–Sun) in user-local calendar.
+  // Memoized with an empty dep array — the week range is fixed for the
+  // lifetime of a single page render (the hook doesn't re-render across
+  // midnight) and memoizing satisfies the React Compiler's immutability
+  // requirement for values used in downstream useMemo deps.
+  const { weekStart, weekEnd, weekStartDate, weekEndDate } = useMemo(() => {
+    const today = new Date();
+    const wStartDate = startOfWeek(today, { weekStartsOn: 1 });
+    const wEndDate = endOfWeek(today, { weekStartsOn: 1 });
+    return {
+      weekStart: format(wStartDate, 'yyyy-MM-dd'),
+      weekEnd: format(wEndDate, 'yyyy-MM-dd'),
+      weekStartDate: wStartDate,
+      weekEndDate: wEndDate,
+    };
+  }, []); // empty: week range is fixed for the lifetime of this render
 
   // Count entries that fall within this week
   const entryCount = useMemo(() => {
@@ -285,9 +303,7 @@ export function useCurrentWeekInsight(entryDates: string[]): {
         return false;
       }
     }).length;
-    // weekStartDate / weekEndDate are derived from `today` — recompute when entryDates changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entryDates, weekStart]);
+  }, [entryDates, weekStartDate, weekEndDate]);
 
   // Find the existing weekly summary for this week
   const summary = useMemo(() => {
@@ -300,29 +316,49 @@ export function useCurrentWeekInsight(entryDates: string[]): {
     );
   }, [insights, weekStart, weekEnd]);
 
-  // For each entry in this week that has a per-entry reflection,
-  // collect the most recent reflection createdAt.
-  // If any reflection's createdAt is AFTER the summary's createdAt → stale.
+  // Staleness check 1: reflection-date comparison.
+  //
+  // For each reflection insight whose entry falls within the current week,
+  // check if it was created/updated AFTER the weekly summary. If any was,
+  // the summary is stale because it didn't include the newer reflection.
+  //
+  // The entriesById map is used to scope to this week only. Without it,
+  // a re-reflection on an entry from a different week would incorrectly
+  // mark the current week as stale.
   const isStaleByReflectionDate = useMemo(() => {
     if (!summary) return false;
 
     const weeklyCreatedAt = summary.createdAt;
-    const weekReflections = (insights ?? []).filter(
+    const allReflections = (insights ?? []).filter(
       (i) =>
         i.type === 'reflection' &&
         isReflectionPayload(i.payload) &&
         i.entryId !== null,
     );
 
-    // We don't have entry_date on insight rows directly, but we can check
-    // if the reflection was created after the weekly summary. Any newer
-    // per-entry reflection means the weekly summary is out of date.
-    return weekReflections.some((r) => r.createdAt > weeklyCreatedAt);
-  }, [insights, summary]);
+    // If we have the entriesById map, filter to only this week's entries.
+    // Otherwise fall back to the broader check (less precise but safe to show stale).
+    const weekReflections = entriesById
+      ? allReflections.filter((r) => {
+          const eDate = r.entryId ? entriesById.get(r.entryId) : undefined;
+          if (!eDate) return false;
+          try {
+            return isWithinInterval(parseISO(eDate), { start: weekStartDate, end: weekEndDate });
+          } catch {
+            return false;
+          }
+        })
+      : allReflections;
 
-  // Async staleness: compute a fresh weekly source_hash and compare against stored.
-  // This catches the case where entry content changed but no new reflection was generated.
-  // Uses the same pattern as useEntryInsight's savedHash state.
+    return weekReflections.some((r) => r.createdAt > weeklyCreatedAt);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insights, summary, weekStart, entriesById]);
+
+  // Staleness check 2: source_hash comparison.
+  //
+  // Computes a fresh weekly source_hash and compares against the stored one.
+  // This catches content edits that didn't trigger a new reflection.
+  // Uses only reflection source_hashes for entries in the current week.
   const [freshHash, setFreshHash] = useState('');
 
   useEffect(() => {
@@ -331,19 +367,24 @@ export function useCurrentWeekInsight(entryDates: string[]): {
       return () => clearTimeout(t);
     }
 
-    // Build the same entryHashes array as the Edge Function would.
-    // For entries with reflections: use reflection.source_hash.
-    // For entries without: we can't compute content hash client-side without fetching
-    // all entry content, so we skip them — the reflection-date check above handles those.
-    // This means freshHash comparison is only meaningful when all contributing entries
-    // have reflections; otherwise rely on isStaleByReflectionDate.
-    const reflectionInsights = (insights ?? []).filter(
+    // Filter reflection insights to those within the current week (using entriesById).
+    // This ensures we compute the same entryHashes the Edge Function used.
+    const allReflectionInsights = (insights ?? []).filter(
       (i) => i.type === 'reflection' && i.entryId !== null,
     );
+    const weekReflectionInsights = entriesById
+      ? allReflectionInsights.filter((i) => {
+          const eDate = i.entryId ? entriesById.get(i.entryId) : undefined;
+          if (!eDate) return false;
+          try {
+            return isWithinInterval(parseISO(eDate), { start: weekStartDate, end: weekEndDate });
+          } catch {
+            return false;
+          }
+        })
+      : allReflectionInsights;
 
-    // Collect source_hashes for entries that have reflections (sorted by entryId for determinism;
-    // actual sort is by entry_date at the Edge Function — we approximate with a stable sort here)
-    const entryHashInputs = reflectionInsights
+    const entryHashInputs = weekReflectionInsights
       .filter((i) => i.sourceHash !== null)
       .map((i) => i.sourceHash as string)
       .sort(); // deterministic sort

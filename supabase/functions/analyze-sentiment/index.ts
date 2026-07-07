@@ -64,7 +64,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // and redeploying the function.
 //
 const AI_CONFIG = {
-  promptVersion: '2.0.0',  // bumped from 1.0.0 — must match src/entities/insight.ts
+  promptVersion: '2.1.0',  // bumped from 2.0.0 — voice fix: second person ("you") required
   defaultModel: 'j-hartmann/emotion-english-distilroberta-base',
 } as const;
 

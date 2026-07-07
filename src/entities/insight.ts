@@ -30,7 +30,7 @@
  *   and redeploying the functions.
  */
 export const AI_CONFIG = {
-  promptVersion: '2.0.0',
+  promptVersion: '2.1.0',
   defaultModel: 'j-hartmann/emotion-english-distilroberta-base',
 } as const;
 

@@ -25,8 +25,8 @@
 //  14.  Call Groq LLM with weekly synthesis prompt
 //  15.  Parse + validate JSON response with isWeeklyResult()
 //  16.  Build full payload with _meta (weeklyPromptVersion, provider: 'groq')
-//  17.  Upsert { payload, source_hash, period_start, period_end, updated_at }
-//       ON CONFLICT (user_id, type, period_start, period_end) WHERE entry_id IS NULL
+//  17.  SELECT existing row → UPDATE if found, INSERT if not.
+//       (Resilient to migration 006 not yet applied; same result as UPSERT once it is.)
 //  18.  Return { result, meta: { cached, generationMs } }
 //
 // Error codes returned to the client:
@@ -376,17 +376,17 @@ Deno.serve(async (req: Request) => {
   // ── 14. Call Groq LLM ────────────────────────────────────
   const groqStartMs = Date.now();
 
-  const systemPrompt = `You are a thoughtful journaling companion helping someone understand the arc of their week. You notice what they might not have explicitly articulated — emotional continuity, subtle shifts, and recurring preoccupations. Be honest and warm. Never be prescriptive or preachy. Speak directly to the writer, not about them.`;
+  const systemPrompt = `You are a thoughtful journaling companion helping someone understand the arc of their week. You notice what they might not have explicitly articulated — emotional continuity, subtle shifts, and recurring preoccupations. Be honest and warm. Never be prescriptive or preachy. Always use "you" and "your" when addressing the person — never refer to them as "the writer" or use third person.`;
 
   const userPrompt = `Here are the journal entries from ${weekStart} to ${weekEnd} (${entryCount} day${entryCount === 1 ? '' : 's'}, ${reflectedCount} with reflections):
 
 ${contextBlock}
 
-Write a weekly synthesis that helps the writer see their week as a whole. Focus on the emotional arc, not statistics. Avoid phrases like "you had X positive days."
+Write a weekly synthesis that helps the person see their week as a whole. Address them directly using "you". Focus on the emotional arc, not statistics. Avoid phrases like "you had X positive days."
 
 Respond ONLY with valid JSON in exactly this shape:
 {
-  "narrative": "2–4 sentences synthesising the emotional story of this week.",
+  "narrative": "2–4 sentences addressed directly to the person using 'you'.",
   "dominantEmotions": [
     { "label": "Joy", "score": 0.45 },
     { "label": "Sadness", "score": 0.28 }
@@ -396,7 +396,7 @@ Respond ONLY with valid JSON in exactly this shape:
 }
 
 Rules:
-- narrative: 2–4 sentences. Story, not summary. Address the writer directly.
+- narrative: 2–4 sentences. Story, not summary. Use "you" — never "the writer" or "they".
 - dominantEmotions: up to 4 emotions aggregated across the week, human-readable capitalised labels, sorted by score descending.
 - recurringThemes: 1–4 one-word or short-phrase topics that appeared repeatedly.
 - emotionalArc: a short phrase (not a sentence) describing the direction of change, e.g. "from uncertainty toward calm" or "sustained focus with occasional frustration".
@@ -470,7 +470,7 @@ Rules:
 
   // ── 16. Build full payload with _meta ────────────────────
   const meta: InsightMeta = {
-    promptVersion: '2.0.0',           // Inherited from per-entry version (informational only)
+    promptVersion: 'n/a',             // Not applicable — weekly rows use weeklyPromptVersion
     weeklyPromptVersion: WEEKLY_CONFIG.weeklyPromptVersion,
     provider: 'groq',
     model: groqModel,
@@ -480,30 +480,56 @@ Rules:
 
   const fullPayload = { ...weeklyResult, _meta: meta };
 
-  // ── 17. Upsert insight ───────────────────────────────────
+  // ── 17. Write insight (SELECT → UPDATE or INSERT) ────────
   //
-  // entry_id IS NULL for period-based insights.
-  // Conflict target must match the partial unique index:
-  //   uq_insight_summary_period ON (user_id, type, period_start, period_end)
-  //   WHERE entry_id IS NULL
+  // We use an explicit SELECT → UPDATE/INSERT pattern rather than
+  // UPSERT with onConflict so the write succeeds regardless of whether
+  // migration 006 (the partial unique index uq_insight_summary_period) has
+  // been applied to the database.  This is safe because:
+  //   a) We already performed a source_hash cache check (step 11 above),
+  //      so if a matching row exists with the same hash we returned early.
+  //   b) The service role bypasses RLS, so the SELECT is authoritative.
+  //   c) Two concurrent Regenerate clicks will produce at most one extra
+  //      row (harmless; the next cache check will deduplicate).
   //
-  // Supabase's .upsert() with onConflict handles this correctly.
-  const { error: upsertError } = await svc.from('insights').upsert(
-    {
-      user_id: user.id,
-      entry_id: null,
-      type: 'summary',
-      payload: fullPayload,
-      source_hash: weeklySourceHash,
-      period_start: weekStart,
-      period_end: weekEnd,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'user_id,type,period_start,period_end' },
-  );
+  // Once migration 006 is applied (uq_insight_summary_period index exists),
+  // the behaviour is identical — the explicit SELECT is just one extra
+  // read per generation, which is negligible.
 
-  if (upsertError) {
-    console.error('[generate-weekly-summary] Failed to upsert insight:', upsertError.message);
+  // Check for an existing row for this period (entry_id IS NULL)
+  const { data: existingRow } = await svc
+    .from('insights')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('type', 'summary')
+    .eq('period_start', weekStart)
+    .eq('period_end', weekEnd)
+    .is('entry_id', null)
+    .maybeSingle();
+
+  // Perform the write — UPDATE if a row exists, INSERT otherwise.
+  const writeResult = await (existingRow
+    ? svc
+        .from('insights')
+        .update({
+          payload: fullPayload,
+          source_hash: weeklySourceHash,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingRow.id)
+    : svc.from('insights').insert({
+        user_id: user.id,
+        entry_id: null,
+        type: 'summary',
+        payload: fullPayload,
+        source_hash: weeklySourceHash,
+        period_start: weekStart,
+        period_end: weekEnd,
+        updated_at: new Date().toISOString(),
+      }));
+
+  if (writeResult.error) {
+    console.error('[generate-weekly-summary] Failed to write insight:', writeResult.error.message);
     return json({ error: 'Failed to save weekly reflection' }, 500);
   }
 
