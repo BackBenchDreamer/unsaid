@@ -177,6 +177,54 @@ These invariants are enforced at multiple levels (DB constraints, service layer,
 
 ---
 
+## Calendar Engine
+
+The yearly activity heatmap now uses a reusable, UI-agnostic calendar engine in [`src/entities/activityCalendar.ts`](src/entities/activityCalendar.ts).
+
+### Responsibilities
+
+The engine computes only domain structure:
+
+- week columns
+- day metadata
+- month anchors
+- calendar bounds
+
+It does **not** decide rendering, styling, hover behaviour, or dashboard-specific layout. React components such as [`src/features/dashboard/ActivityHeatmap.tsx`](src/features/dashboard/ActivityHeatmap.tsx) render the returned model.
+
+### Why this split exists
+
+This keeps the calendar model reusable across:
+
+- dashboard heatmap
+- yearly review
+- monthly review
+- memory timeline
+- printable/exported calendar views
+- future widgets
+
+### Extension model
+
+Each day exposes a visual model with a base tone plus independent overlays rather than a single hard-coded “activity level”. Current UI only renders entry presence and mood tint, but the day model already supports future decorations such as:
+
+- mood
+- AI reflection state
+- memorable day flag
+- life chapter milestone
+- streak marker
+- favorite entry
+
+This allows additional visual layers to be introduced without redesigning the underlying calendar engine.
+
+### Calendar correctness
+
+Month anchors are derived from the actual date that begins each month and mapped to the same week-column grid used by day cells. This avoids manual month-label positioning and ensures correct alignment for:
+
+- first/last partial weeks
+- leap years
+- alternate locale week starts
+
+
 ## Mobile Design
 
 UnSaid is designed for equal first-class use on desktop and mobile. Journaling happens on the couch, during commutes, and just before bed.
