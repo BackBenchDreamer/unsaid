@@ -26,3 +26,10 @@ export const MOOD_EMOJIS: Record<string, string> = {
   good: '😊',
   great: '🥳',
 };
+
+/**
+ * Minimum number of journal entries in a calendar week before the
+ * weekly reflection invitation is shown. Adjust here to tune the
+ * threshold without touching any business logic.
+ */
+export const WEEKLY_REFLECTION_MIN_ENTRIES = 3;

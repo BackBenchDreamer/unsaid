@@ -64,7 +64,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // and redeploying the function.
 //
 const AI_CONFIG = {
-  promptVersion: '2.0.0',  // bumped from 1.0.0 — must match src/entities/insight.ts
+  promptVersion: '2.1.0',  // bumped from 2.0.0 — voice fix: second person ("you") required
   defaultModel: 'j-hartmann/emotion-english-distilroberta-base',
 } as const;
 
@@ -77,7 +77,7 @@ interface SentimentResult {
 }
 
 interface InsightMeta {
-  promptVersion: string;
+  version: string;
   /** Identifier of the AI inference backend, e.g. "huggingface". */
   provider: string;
   model: string;
@@ -587,7 +587,7 @@ Deno.serve(async (req: Request) => {
   // inference backends (e.g. OpenAI, Anthropic) are added in future.
   // Keep in sync with the InsightMeta interface in src/entities/insight.ts.
   const meta: InsightMeta = {
-    promptVersion: AI_CONFIG.promptVersion,
+    version: AI_CONFIG.promptVersion,
     provider: 'huggingface',
     model,
     generatedAt: new Date().toISOString(),

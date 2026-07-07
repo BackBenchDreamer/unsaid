@@ -42,7 +42,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // when bumping promptVersion and redeploying.
 //
 const AI_CONFIG = {
-  promptVersion: '2.0.0',
+  promptVersion: '2.1.0',  // bumped from 2.0.0 — voice fix: second person ("you") required
   defaultHFModel: 'j-hartmann/emotion-english-distilroberta-base',
   defaultGroqModel: 'llama-3.1-8b-instant',
 } as const;
@@ -67,7 +67,7 @@ interface ReflectionResult {
 }
 
 interface InsightMeta {
-  promptVersion: string;
+  version: string;
   provider: string;
   model: string;
   generatedAt: string;
@@ -389,9 +389,9 @@ Deno.serve(async (req: Request) => {
     .map(([k, v]) => `${k}=${v.toFixed(2)}`)
     .join(', ');
 
-  const systemPrompt = `You are a thoughtful journaling companion. You help people understand themselves through their writing. Be honest and gentle. Never be prescriptive or preachy.`;
+  const systemPrompt = `You are a thoughtful journaling companion speaking directly to the person who wrote this entry. Use "you" and "your" — never refer to them as "the writer" or in third person. Be honest, warm, and specific to what they wrote. Never be prescriptive or preachy.`;
 
-  const userPrompt = `Given the journal entry excerpt and its emotional composition, write a short reflection (2–3 sentences) that reveals something the writer may not have explicitly noticed. End with exactly one open-ended follow-up question.
+  const userPrompt = `Given the journal entry excerpt and its emotional composition, write a short reflection (2–3 sentences) addressed directly to the person — use "you", not "the writer". Reveal something they may not have explicitly noticed. End with exactly one open-ended follow-up question, also addressed to them directly.
 
 Emotional composition:
 ${emotionLine}
@@ -401,7 +401,7 @@ Journal excerpt (first 600 characters):
 
 Respond ONLY with valid JSON in exactly this shape:
 {
-  "summary": "2–3 sentence reflection here.",
+  "summary": "2–3 sentence reflection addressed to the person as 'you'.",
   "emotions": [
     { "label": "Joy", "score": 0.42 },
     { "label": "Neutral", "score": 0.30 },
@@ -409,10 +409,12 @@ Respond ONLY with valid JSON in exactly this shape:
     { "label": "Fear", "score": 0.06 }
   ],
   "themes": ["Work", "Family"],
-  "question": "One open-ended question here?"
+  "question": "One open-ended question addressed directly to the person?"
 }
 
 Rules:
+- summary: address the person as "you". Never say "the writer" or "they".
+- question: address the person as "you". Never say "the writer" or "they".
 - emotions: list the top 4 by score, human-readable capitalised labels.
 - themes: 1–3 one-word or short-phrase topics.
 - summary and question must be non-empty strings.
@@ -486,7 +488,7 @@ Rules:
 
   // ── 14. Build full payload with _meta ────────────────────
   const meta: InsightMeta = {
-    promptVersion: AI_CONFIG.promptVersion,
+    version: AI_CONFIG.promptVersion,
     provider: 'groq',
     model: groqModel,
     generatedAt: new Date().toISOString(),

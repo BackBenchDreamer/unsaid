@@ -12,17 +12,16 @@
 /**
  * Canonical AI configuration for UnSaid.
  *
- * promptVersion: bump this string whenever prompt logic changes in the
- *   Edge Function. All existing source_hash values become stale automatically —
- *   users will see "Re-reflect" on their next visit.
+ * promptVersion: bump this string whenever the per-entry reflection prompt
+ *   changes in either Edge Function. All existing per-entry source_hash values
+ *   become stale — users see "Re-reflect" on their next visit. This is
+ *   intentional: the new version supersedes all prior cached output.
  *
- *   promptVersion bump from 1.0.0 → 2.0.0: existing 'sentiment' source hashes
- *   become stale. Users see "Re-reflect" on next visit. This is intentional —
- *   the new reflection experience supersedes the old single-label output.
+ *   History: 1.0.0 → 2.0.0 (reflection overhaul), 2.0.0 → 2.1.0 (voice fix)
  *
- * defaultModel: fallback display value if user has not set a model in settings.
- *   The actual model used at inference time comes from settings.aiModel
- *   (mapped from user_settings.hf_model in the DB).
+ * defaultModel: fallback display value if the user has not set a model in
+ *   settings. The actual model used at inference time comes from
+ *   settings.aiModel (mapped from user_settings.hf_model in the DB).
  *
  * EDGE FUNCTION NOTE: supabase/functions/analyze-sentiment/index.ts and
  *   supabase/functions/generate-reflection/index.ts each contain a local
@@ -30,7 +29,7 @@
  *   and redeploying the functions.
  */
 export const AI_CONFIG = {
-  promptVersion: '2.0.0',
+  promptVersion: '2.1.0',
   defaultModel: 'j-hartmann/emotion-english-distilroberta-base',
 } as const;
 
@@ -52,8 +51,14 @@ export type InsightType = 'sentiment' | 'summary' | 'pattern' | 'reflection';
  * how or when an insight was generated, or with which provider/model/prompt.
  */
 export interface InsightMeta {
-  /** e.g. "2.0.0" — bump AI_CONFIG.promptVersion to invalidate all caches. */
-  promptVersion: string;
+  /**
+   * Prompt version that generated this insight.
+   * Per-entry reflections: "2.1.0" (AI_CONFIG.promptVersion).
+   * Weekly reflections: "1.0.0" (WEEKLY_CONFIG.version).
+   * Bump the relevant version in the Edge Function to invalidate caches
+   * of that type only — the two version spaces are independent.
+   */
+  version: string;
   /**
    * Inference backend identifier, e.g. "huggingface" or "groq".
    * Stored so rows remain interpretable if additional backends are added later.
@@ -132,6 +137,53 @@ export interface ReflectionResult {
   question: string;
 }
 
+// ─── Weekly summary types ─────────────────────────────────────
+
+/**
+ * Full typed payload for type='summary' rows (weekly reflection).
+ * Stored in the DB; includes _meta for self-description.
+ * _meta.weeklyPromptVersion tracks the weekly prompt version independently
+ * from the per-entry promptVersion so that per-entry caches are never
+ * invalidated by changes to the weekly synthesis prompt.
+ */
+export interface WeeklyPayload {
+  /** 2–4 sentence narrative synthesising the week's emotional arc. */
+  narrative: string;
+  /** Top emotions aggregated across the week's entries, sorted by score desc. */
+  dominantEmotions: ReflectionEmotion[];
+  /** Recurring themes detected across the week, deduplicated. */
+  recurringThemes: string[];
+  /** Short phrase describing the emotional trajectory, e.g. "from uncertainty toward calm". */
+  emotionalArc: string;
+  _meta: InsightMeta;
+}
+
+/**
+ * Edge Function wire return type — what generateWeeklySummary() returns to the client.
+ * Identical to WeeklyPayload minus _meta.
+ */
+export interface WeeklyResult {
+  narrative: string;
+  dominantEmotions: ReflectionEmotion[];
+  recurringThemes: string[];
+  emotionalArc: string;
+}
+
+/**
+ * Type-narrowing guard: returns true if p contains WeeklyPayload fields.
+ * Checks structural shape only — does not require _meta.
+ */
+export function isWeeklyPayload(p: unknown): p is WeeklyPayload {
+  if (typeof p !== 'object' || p === null) return false;
+  const v = p as Record<string, unknown>;
+  return (
+    typeof v.narrative === 'string' && v.narrative.trim().length > 0 &&
+    Array.isArray(v.dominantEmotions) &&
+    Array.isArray(v.recurringThemes) &&
+    typeof v.emotionalArc === 'string'
+  );
+}
+
 /**
  * A typed insight row read from the DB via insightsService.getInsights().
  * The payload field is open-schema (Record<string, unknown>) to accommodate
@@ -142,14 +194,28 @@ export interface EntryInsight {
   /** The journal entry this insight was generated from. Null for user-level insights. */
   entryId: string | null;
   type: InsightType;
-  /** Open-schema — use isSentimentPayload() or isReflectionPayload() to narrow. */
+  /** Open-schema — use isSentimentPayload(), isReflectionPayload(), or isWeeklyPayload() to narrow. */
   payload: Record<string, unknown>;
   /**
-   * SHA-256 of sourceEnvelope(content, promptVersion, model) at generation time.
+   * SHA-256 of the source envelope at generation time.
+   * - Per-entry rows: sha256Hex(sourceEnvelope(content, promptVersion, model))
+   * - Weekly rows: sha256Hex(JSON.stringify({ weekStart, weekEnd, weeklyPromptVersion, model, entryHashes }))
    * Null for legacy rows (pre-migration). Null rows are treated as always-stale.
    */
   sourceHash: string | null;
   createdAt: string;
+  /**
+   * ISO date string ("YYYY-MM-DD") for the start of the period this insight covers.
+   * Null for per-entry insights (type='reflection' or 'sentiment').
+   * Set for period insights (type='summary' or 'pattern').
+   */
+  periodStart: string | null;
+  /**
+   * ISO date string ("YYYY-MM-DD") for the end of the period this insight covers.
+   * Null for per-entry insights (type='reflection' or 'sentiment').
+   * Set for period insights (type='summary' or 'pattern').
+   */
+  periodEnd: string | null;
 }
 
 /**
