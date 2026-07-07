@@ -12,8 +12,8 @@
  * phantom auth.users rows are blocked before they reach the network.
  */
 
-import React, { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../app/providers/AuthProvider';
 import { APP_NAME, APP_TAGLINE } from '../../shared/constants';
 
@@ -90,7 +90,8 @@ function MailIcon() {
 type FlowState = 'idle' | 'confirming' | 'sent';
 
 export default function LoginPage() {
-  const { signInWithOtp, isAuthenticated } = useAuth();
+  const { signInWithOtp, isAuthenticated, isLoading, isApproved, isPending } = useAuth();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   const [email, setEmail] = useState('');
@@ -103,9 +104,31 @@ export default function LoginPage() {
     return '';
   });
 
-  // Already authenticated (e.g. navigated to /login while logged in) — render nothing,
-  // the router will redirect away via the auth state.
-  if (isAuthenticated) return null;
+  // Redirect authenticated users away from /login.
+  // This handles three scenarios:
+  //   1. User navigates to /login while already authenticated.
+  //   2. User is on the "sent" waiting screen and authentication completes in
+  //      another browser tab (cross-tab magic link sign-in).
+  //   3. User refreshes /login after a session is already stored locally.
+  // We wait until isLoading=false so we only act on settled auth state and
+  // never redirect on the transient initial-load window where session is
+  // being re-hydrated.
+  useEffect(() => {
+    if (isLoading) return;
+    if (!isAuthenticated) return;
+
+    if (isApproved) {
+      navigate('/', { replace: true });
+    } else if (isPending) {
+      navigate('/waitlist', { replace: true });
+    } else {
+      // Authenticated but not yet approved/pending — let ProtectedRoute decide.
+      navigate('/', { replace: true });
+    }
+  }, [isLoading, isAuthenticated, isApproved, isPending, navigate]);
+
+  // While auth is loading or we're about to redirect, render nothing.
+  if (isLoading || isAuthenticated) return null;
 
   // ── idle: validate then advance to confirming ──────────────────────────
   const handleSubmit = (e: React.FormEvent) => {

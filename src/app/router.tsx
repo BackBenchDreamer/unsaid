@@ -27,6 +27,30 @@ function LoadingFallback() {
 }
 
 /**
+ * Route guard for public-only pages (login, waitlist).
+ *
+ * If the user already has a valid, settled session they should never land on
+ * /login or /waitlist — redirect them to the appropriate destination.
+ * We render nothing while auth is still loading so we don't flash the login
+ * UI for a user whose session is being re-hydrated.
+ */
+function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isApproved, isPending, isLoading } = useAuth();
+
+  if (isLoading) return <LoadingFallback />;
+
+  if (isAuthenticated) {
+    if (isApproved) return <Navigate to="/" replace />;
+    if (isPending) return <Navigate to="/waitlist" replace />;
+    // Authenticated but role not yet resolved — navigate to "/" and let
+    // ProtectedRoute decide.
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
+}
+
+/**
  * Route guard — requires authentication and approved status.
  */
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -57,8 +81,8 @@ export function AppRouter() {
     <BrowserRouter>
       <Suspense fallback={<LoadingFallback />}>
         <Routes>
-          {/* Public routes */}
-          <Route path="/login" element={<LoginPage />} />
+          {/* Public routes — authenticated users are redirected away */}
+          <Route path="/login" element={<PublicOnlyRoute><LoginPage /></PublicOnlyRoute>} />
           <Route path="/waitlist" element={<WaitlistPage />} />
           <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
