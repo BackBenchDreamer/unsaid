@@ -308,7 +308,7 @@ async function extractForEntry(
     .map((i) => i.entry_id)
     .filter(Boolean);
 
-  let recentEntryDates: Record<string, string> = {};
+  const recentEntryDates: Record<string, string> = {};
   if (recentEntryIds.length > 0) {
     const { data: recentEntries } = await svc
       .from('entries')
@@ -740,7 +740,7 @@ Deno.serve(async (req: Request) => {
 
   // ── 2. Parse body ────────────────────────────────────────
   let entryId: string;
-  let backfill = false;
+  let backfill: boolean;
   try {
     const body = await req.json();
     entryId = body.entryId;

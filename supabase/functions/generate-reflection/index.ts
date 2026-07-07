@@ -248,7 +248,7 @@ async function getRelevantContext(
 
   // Build context text within token budget
   const parts: string[] = [];
-  let charCount = 0;
+  let totalCharCount = 0;
 
   // Group entities by type for readability
   const entityGroups = new Map<string, string[]>();
@@ -273,21 +273,20 @@ async function getRelevantContext(
       entityParts.push(`recurring topics: ${topicEntities.slice(0, 5).join(', ')}`);
     }
     const entityText = `Relevant context about this person: ${entityParts.join('; ')}.`;
-    if (charCount + entityText.length <= charBudget) {
+    if (totalCharCount + entityText.length <= charBudget) {
       parts.push(entityText);
-      charCount += entityText.length;
+      totalCharCount += entityText.length;
     }
   }
 
-  // Add top active chapter if it has theme overlap
+  // Add top active chapter if it has theme overlap (last item — no further budget checks needed)
   const topChapter = scoredChapters[0];
   if (topChapter && topChapter.overlap > 0 && topChapter.chapter.name) {
     const chapterText = topChapter.chapter.summary
       ? `They are currently in a life chapter called "${topChapter.chapter.name}": ${topChapter.chapter.summary}`
       : `They are currently in a life chapter called "${topChapter.chapter.name}".`;
-    if (charCount + chapterText.length <= charBudget) {
+    if (totalCharCount + chapterText.length <= charBudget) {
       parts.push(chapterText);
-      charCount += chapterText.length;
     }
   }
 

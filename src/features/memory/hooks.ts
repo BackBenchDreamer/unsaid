@@ -16,7 +16,6 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { useCallback } from 'react';
 import { memoryService } from '../../services/memoryService';
 import type { ChapterStatus, ContextEntityType } from '../../entities/memory';
 import { useAuth } from '../../app/providers/AuthProvider';
@@ -113,12 +112,9 @@ export function useContextBlock(currentThemes: string[] = []) {
   const { user } = useAuth();
   const userId = user?.id;
 
-  // Memoize themes array identity for stable query key
-  const stableThemes = useCallback(() => currentThemes, [currentThemes.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
-
   return useQuery({
     queryKey: memoryKeys.contextBlock(currentThemes),
-    queryFn: () => memoryService.getActiveChapterSummaries(userId!, stableThemes()),
+    queryFn: () => memoryService.getActiveChapterSummaries(userId!, currentThemes),
     enabled: !!userId,
     staleTime: 5 * 60 * 1000,
     gcTime: 15 * 60 * 1000,
