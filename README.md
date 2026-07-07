@@ -355,9 +355,7 @@ Two-provider architecture: HuggingFace for emotion classification, Groq for refl
 - Both tokens are AES-256-GCM encrypted by `encrypt-token` using `APP_ENCRYPTION_KEY`. The plaintext is never stored or returned.
 - The `encrypt-token` Edge Function accepts `provider: 'hf' | 'groq'` (defaults to `'hf'` for backward compatibility) and writes to the corresponding `user_settings` column.
 
-**`AI_CONFIG.promptVersion`:** bumped from `'1.0.0'` → `'2.0.0'` (M1) → `'2.1.0'` (M2, voice fix). Each bump stales all per-entry cached rows — users see "Re-reflect" on their next visit. This is intentional. Stored in `_meta.version` on each row.
-
-**Naming reference:** see [`foundation-of-reflection-plan.md`](foundation-of-reflection-plan.md) for the full naming reference table.
+**`AI_CONFIG.promptVersion`:** bumped from `'1.0.0'` → `'2.0.0'` (M1) → `'2.1.0'` (M2, voice fix) → `'3.0.0'` (M3, context injection added). Each bump stales all per-entry cached rows — users see "Re-reflect" on their next visit. This is intentional. Stored in `_meta.version` on each row.
 
 ### `ReflectionPayload` schema
 

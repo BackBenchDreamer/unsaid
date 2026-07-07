@@ -4,27 +4,31 @@
 // POST { entryId: string }
 // Authorization: Bearer <access_token>
 //
-// Flow:
+// Flow (M3 — promptVersion 3.0.0):
 //   1.  Validate JWT
 //   2.  Parse + validate body
 //   3.  Fetch entry (service role — bypasses RLS)
 //   4.  Assert ownership
 //   5.  Fetch user_settings (hf_token_encrypted, hf_model, groq_token_encrypted, groq_model)
 //   6.  Guard: groq_token_encrypted IS NULL → return REFLECTION_NOT_CONFIGURED (422)
-//   7.  Compute source_hash = sha256Hex(sourceEnvelope(content, promptVersion, groq_model))
-//   8.  Cache check: if existing reflection insight has matching source_hash AND
-//       passes isReflectionResult() → return cached result immediately.
-//   9.  Decrypt HF token
-//  10.  Call HF emotion model — returns 7 emotion scores
-//  11.  Decrypt Groq token
-//  12.  Call Groq LLM with emotion context + entry excerpt
-//  13.  Parse + validate JSON response with isReflectionResult()
-//  14.  Build full payload with _meta (provider: 'groq')
-//  15.  Upsert { payload, source_hash, updated_at } ON CONFLICT (user_id, entry_id, type)
-//  16.  Return { result, meta: { cached, generationMs } }
+//   7.  Fetch existing insight row from insights (for cache check at step 11)
+//   8.  Decrypt HF token; call HF emotion model → 7 emotion scores
+//   9.  Extract top-3 emotion labels as theme seeds for context relevance scoring
+//  10.  Query context_memory + life_chapters; build context block (≤ 500 tokens, non-fatal)
+//  11.  Compute source_hash = sha256Hex(sourceEnvelope(content, promptVersion, groqModel, contextHash?))
+//       Cache check: if stored source_hash matches → return cached result immediately
+//  12.  Decrypt Groq token
+//  13.  Call Groq LLM with emotion scores + entry excerpt; inject context block into system prompt
+//  14.  Parse + validate JSON response with isReflectionResult()
+//  15.  Build full payload with _meta (provider: 'groq', version: '3.0.0')
+//  16.  Upsert { payload, source_hash, updated_at } ON CONFLICT (user_id, entry_id, type)
+//  17.  Fire-and-forget POST extract-memory (non-blocking; errors silently logged)
+//  18.  Return { result, meta: { cached, generationMs } }
 //
 // Error codes returned to the client:
 //   REFLECTION_NOT_CONFIGURED — Groq token not set (expected; client falls back silently)
+//   HF_NOT_CONFIGURED         — HF token not set
+//   HF_MODEL_LOADING          — HF model cold-starting (503)
 //   HF_PROVIDER_ERROR         — HF model returned non-200
 //   HF_SHAPE_ERROR            — HF returned 200 but unrecognised response shape
 //   GROQ_PROVIDER_ERROR       — Groq API returned non-200
@@ -283,8 +287,8 @@ async function getRelevantContext(
   const topChapter = scoredChapters[0];
   if (topChapter && topChapter.overlap > 0 && topChapter.chapter.name) {
     const chapterText = topChapter.chapter.summary
-      ? `They are currently in a life chapter called "${topChapter.chapter.name}": ${topChapter.chapter.summary}`
-      : `They are currently in a life chapter called "${topChapter.chapter.name}".`;
+      ? `This person is in a life chapter called "${topChapter.chapter.name}": ${topChapter.chapter.summary}`
+      : `This person is in a life chapter called "${topChapter.chapter.name}".`;
     if (totalCharCount + chapterText.length <= charBudget) {
       parts.push(chapterText);
     }
